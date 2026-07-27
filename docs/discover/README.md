@@ -3,7 +3,6 @@
 
 ## Файлы
 
-- [__init__.py](__init__.py.md)
 - [catalog.py](catalog.py.md)
 - [composefile.py](composefile.py.md)
 - [dockerclient.py](dockerclient.py.md)

@@ -3,7 +3,6 @@
 
 ## Файлы
 
-- [__init__.py](__init__.py.md)
 - [builder.py](builder.py.md)
 - [envmerge.py](envmerge.py.md)
 - [graph.py](graph.py.md)
