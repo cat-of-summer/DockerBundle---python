@@ -1,0 +1,21 @@
+name: cron
+priority: 10
+
+# Not matched directly: services declare a crontab and the planner adds this shared
+# runtime once, so a bundle never ends up with several cron daemons.
+shared: cron
+
+families: [debian, alpine]
+
+install:
+  debian: [cron]
+  alpine: [dcron]
+
+supervisor:
+  - name: cron
+    command: cron -f
+    priority: 70
+    stopsignal: TERM
+    stopwaitsecs: 10
+    scalable: false
+    critical: false

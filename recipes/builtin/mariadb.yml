@@ -1,0 +1,42 @@
+name: mariadb
+priority: 60
+
+match:
+  image: ["mariadb", "mariadb:*", "*/mariadb:*"]
+  files: ["mariadb.cnf"]
+
+families: [debian]
+
+install:
+  debian: [mariadb-server, mariadb-client]
+
+copy:
+  - src: mariadb.cnf
+    dest: /etc/mysql/conf.d/{slug}.cnf
+    kind: config
+    optional: true
+
+port:
+  default: 3306
+  configure:
+    type: replace
+    file: /etc/mysql/conf.d/{slug}-port.cnf
+    pattern: "port"
+
+supervisor:
+  - name: "{slug}"
+    command: mariadbd --user=root
+    priority: 10
+    stopsignal: TERM
+    stopwaitsecs: 60
+    scalable: false
+    critical: true
+
+readiness:
+  - type: tcp
+    target: "{port}"
+    timeout: 90
+
+mount_kinds:
+  "/var/lib/mysql": state
+  "/etc/mysql/*": config

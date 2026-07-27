@@ -1,0 +1,37 @@
+name: qdrant
+priority: 60
+
+match:
+  image: ["qdrant/qdrant", "qdrant/qdrant:*"]
+
+# Qdrant ships no distro package, so it is imported from its own image rather than
+# installed. The generic rootfs merge in the Dockerfile handles that.
+families: [debian]
+
+port:
+  default: 6333
+  configure:
+    type: env_var
+    var: QDRANT__SERVICE__HTTP_PORT
+
+supervisor:
+  - name: "{slug}"
+    command: /qdrant/qdrant
+    directory: /qdrant
+    priority: 20
+    stopsignal: TERM
+    stopwaitsecs: 30
+    scalable: false
+    critical: true
+    environment:
+      QDRANT__SERVICE__HTTP_PORT: "{port}"
+      QDRANT__STORAGE__STORAGE_PATH: /qdrant/storage
+
+readiness:
+  - type: http
+    target: "http://127.0.0.1:{port}/readyz"
+    timeout: 60
+
+mount_kinds:
+  "/qdrant/storage": state
+  "/qdrant/config*": config

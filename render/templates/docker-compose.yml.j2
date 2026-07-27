@@ -1,0 +1,92 @@
+{{ header }}
+#
+# Deploy:  docker compose --env-file .env up -d
+# Update:  docker compose pull && docker compose up -d
+#
+# The bundle is one image holding every baked service. Anything that could not be baked
+# is kept here as an ordinary neighbouring service.
+
+services:
+  {{ plan.name }}:
+    image: ${BUNDLE_IMAGE:-{{ image_ref }}}
+    container_name: {{ plan.name }}${INSTANCE:-}
+    restart: unless-stopped
+    env_file: .env
+{% if published_ports %}
+    ports:
+{% for entry in published_ports %}
+      - "{{ entry }}"
+{% endfor %}
+{% endif %}
+{% if plan.named_volumes %}
+    volumes:
+{% for name, target in plan.named_volumes.items() %}
+      - {{ name }}:{{ target }}
+{% endfor %}
+{% endif %}
+    networks:
+      - network
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/bundle-healthcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: {{ start_period }}s
+{% if cuda %}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${GPU_COUNT:-1}
+              capabilities: [gpu]
+{% endif %}
+{% if labels %}
+    labels:
+{% for label in labels %}
+      - "{{ label }}"
+{% endfor %}
+{% endif %}
+{% for service in plan.sidecars %}
+
+  # Not baked: {{ service.recipe_reason }}
+  {{ service.spec.name }}:
+{% if service.spec.image %}
+    image: {{ service.spec.image }}
+{% endif %}
+    container_name: {{ service.spec.name }}${INSTANCE:-}
+    restart: unless-stopped
+    env_file: .env
+{% if service.spec.command %}
+    command:
+{% for part in service.spec.command %}
+      - "{{ part }}"
+{% endfor %}
+{% endif %}
+{% if service.spec.ports %}
+    ports:
+{% for port in service.spec.ports %}
+      - "{{ port.published }}:{{ port.container }}"
+{% endfor %}
+{% endif %}
+{% if service.spec.mounts %}
+    volumes:
+{% for mount in service.spec.mounts %}
+      - {{ mount.source }}:{{ mount.target }}{{ ':ro' if mount.read_only else '' }}
+{% endfor %}
+{% endif %}
+    networks:
+      - network
+{% endfor %}
+{% if plan.named_volumes %}
+
+volumes:
+{% for name in plan.named_volumes %}
+  {{ name }}:
+{% endfor %}
+{% endif %}
+
+networks:
+  network:
+    external: {{ 'true' if plan.network_external else 'false' }}
+    name: ${NETWORK:-{{ plan.network }}}

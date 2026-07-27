@@ -1,0 +1,49 @@
+services:
+  laravel:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        PHP_VERSION: ${PHP_VERSION}
+    hostname: laravel${INSTANCE}
+    container_name: laravel${INSTANCE}
+    restart: unless-stopped
+    working_dir: /var/www/html
+    command: ["/usr/bin/supervisord", "-n", "-c", "/etc/supervisord.conf"]
+    volumes:
+      - ./data:/var/www/html
+      - ./opcache.ini:/usr/local/etc/php/conf.d/opcache.ini
+      - ./php.ini:/usr/local/etc/php/conf.d/custom.ini
+      - ./supervisord.conf:/etc/supervisord.conf
+      - ./crontab:/etc/crontab
+    networks:
+      - network
+    environment:
+      - APP_URL=${APP_URL}
+      - DB_HOST=${DB_HOST}
+      - DB_DATABASE=${DB_DATABASE}
+      - DB_PASSWORD=${DB_PASSWORD}
+
+  nginx:
+    image: nginx:alpine
+    container_name: laravel_nginx${INSTANCE}
+    restart: unless-stopped
+    ports:
+      - "${EXTERNAL_ACCESS}"
+    volumes:
+      - ./data:/var/www/html
+      - ./nginx.conf:/tmp/nginx.conf.template
+    environment:
+      - HTTP_LOGIN=${HTTP_LOGIN}
+      - INSTANCE=${INSTANCE}
+    command: ["nginx", "-g", "daemon off;"]
+    entrypoint: ["sh", "-c", "envsubst < /tmp/nginx.conf.template > /etc/nginx/conf.d/default.conf && exec \"$$@\"", "--"]
+    networks:
+      - network
+    depends_on:
+      - laravel
+
+networks:
+  network:
+    external: true
+    name: ${NETWORK}

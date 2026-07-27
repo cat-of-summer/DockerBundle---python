@@ -1,0 +1,22 @@
+services:
+  mysql:
+    image: mysql:${MYSQL_VERSION}
+    hostname: mysql${INSTANCE}
+    container_name: mysql${INSTANCE}
+    restart: unless-stopped
+    ports:
+      - "${EXTERNAL_ACCESS}"
+    environment:
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+    volumes:
+      - ./data:/var/lib/mysql
+      - ./mysql.cnf:/etc/mysql/conf.d/custom.cnf:ro
+    networks:
+      - network
+
+networks:
+  network:
+    external: true
+    name: ${NETWORK}

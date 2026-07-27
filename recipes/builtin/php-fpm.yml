@@ -1,0 +1,77 @@
+name: php-fpm
+priority: 60
+
+match:
+  image: ["php:*fpm*", "php:*-fpm", "*/php:*fpm*"]
+  files: ["php.ini", "opcache.ini"]
+  command: ["php-fpm"]
+
+families: [debian]
+
+install:
+  debian:
+    - php-fpm
+    - php-cli
+    - php-mysql
+    - php-pgsql
+    - php-mbstring
+    - php-xml
+    - php-zip
+    - php-intl
+    - php-gd
+    - php-bcmath
+    - php-curl
+    - unzip
+    - git
+
+run:
+  debian:
+    - "curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer"
+    # The stock pool listens on 9000; each service gets its own pool file instead, so
+    # remove the default to keep the port free for whichever service claims it.
+    - "rm -f /etc/php/*/fpm/pool.d/www.conf"
+
+# One php-fpm master with one pool per service. Separate masters would collide on the
+# pid file and the log; pools are php-fpm's own mechanism for exactly this.
+shared: php-fpm
+
+copy:
+  - src: php.ini
+    dest: /etc/php/conf.d/{slug}-custom.ini
+    kind: config
+    optional: true
+  - src: opcache.ini
+    dest: /etc/php/conf.d/{slug}-opcache.ini
+    kind: config
+    optional: true
+  - from_mount: /var/www/html
+    dest: /var/www/{slug}
+    kind: code
+    optional: true
+
+port:
+  default: 9000
+  configure:
+    type: fpm_pool
+    file: /etc/php/fpm/pool.d/{slug}.conf
+
+supervisor:
+  - name: php-fpm
+    command: php-fpm -F -y /etc/php/fpm/php-fpm.conf
+    priority: 30
+    stopsignal: QUIT
+    stopwaitsecs: 30
+    scalable: false
+    critical: true
+
+readiness:
+  - type: tcp
+    target: "{port}"
+    timeout: 30
+
+mount_kinds:
+  "/var/www/*": code
+  "/usr/local/etc/php/*": skip
+  "/etc/php/*": config
+  "/etc/crontab": skip
+  "/etc/supervisord.conf": skip

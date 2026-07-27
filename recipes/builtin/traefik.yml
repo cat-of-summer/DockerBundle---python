@@ -1,0 +1,17 @@
+name: traefik
+priority: 80
+bakeable: false
+reason: >-
+  Traefik reads the Docker socket to discover containers and owns :80/:443 on the host.
+  A reverse proxy that routes to the bundle cannot be one of the processes inside it.
+
+match:
+  image: ["traefik", "traefik:*", "*/traefik:*"]
+  service: ["traefik"]
+
+port:
+  default: 80
+
+mount_kinds:
+  "/var/run/docker.sock": socket
+  "/letsencrypt": state

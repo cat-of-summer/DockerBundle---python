@@ -1,0 +1,85 @@
+name: php-apache
+priority: 70
+
+# php:*-apache runs mod_php inside Apache rather than a separate FPM pool, so it needs
+# its own program and cannot share the php-fpm master.
+match:
+  image: ["php:*apache*", "php:apache*"]
+  service: ["apache", "*-apache"]
+  package: ["*apache*"]
+  files: ["apache.conf"]
+
+families: [debian]
+
+install:
+  debian:
+    - apache2
+    - libapache2-mod-php
+    - php-cli
+    - php-mysql
+    - php-pgsql
+    - php-mbstring
+    - php-xml
+    - php-zip
+    - php-intl
+    - php-gd
+    - php-curl
+    - unzip
+    - git
+
+run:
+  debian:
+    - "curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer"
+    - "a2enmod rewrite remoteip"
+    - "rm -f /etc/apache2/sites-enabled/000-default.conf"
+
+copy:
+  - src: apache.conf
+    dest: /etc/apache2/sites-enabled/{slug}.conf
+    kind: config
+    optional: true
+  - src: php.ini
+    dest: /etc/php/conf.d/{slug}-custom.ini
+    kind: config
+    optional: true
+  - src: opcache.ini
+    dest: /etc/php/conf.d/{slug}-opcache.ini
+    kind: config
+    optional: true
+  - src: crontab
+    dest: /etc/cron.d/{slug}
+    kind: config
+    optional: true
+    chmod: "0644"
+  - from_mount: /var/www/html
+    dest: /var/www/{slug}
+    kind: code
+    optional: true
+
+port:
+  default: 80
+  configure:
+    type: replace
+    file: /etc/apache2/ports.conf
+    pattern: "Listen"
+
+supervisor:
+  - name: "{slug}"
+    command: apache2ctl -D FOREGROUND
+    priority: 40
+    stopsignal: WINCH
+    stopwaitsecs: 30
+    scalable: false
+    critical: true
+
+readiness:
+  - type: tcp
+    target: "{port}"
+    timeout: 60
+
+mount_kinds:
+  "/var/www/*": code
+  "/etc/apache2/*": config
+  "/usr/local/etc/php/*": config
+  "/etc/crontab": config
+  "/etc/supervisord.conf": skip

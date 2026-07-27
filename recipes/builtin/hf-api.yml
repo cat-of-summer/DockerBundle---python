@@ -1,0 +1,52 @@
+name: hf-api
+priority: 55
+
+# The hf-audio / hf-image / hf-video packages are locally built FastAPI apps: an
+# api/main.py served by uvicorn, with the model pulled by their own entrypoint.
+match:
+  image: ["python:*", "python"]
+  files: ["api"]
+  service: ["hf-audio", "hf-image", "hf-video"]
+  package: ["*hf-audio*", "*hf-image*", "*hf-video*"]
+
+families: [debian]
+
+install:
+  debian: [python3, python3-venv, python3-pip, ffmpeg]
+
+copy:
+  - src: api
+    dest: /app/{slug}/api
+    kind: code
+    optional: false
+
+port:
+  default: 8000
+  configure:
+    type: cli_flag
+    flag: "--port"
+
+supervisor:
+  - name: "{slug}"
+    command: >-
+      sh -c 'PATH=/opt/{slug}-venv/bin:$PATH
+      exec uvicorn api.main:app --host 0.0.0.0 --port {port}
+      --workers 1 --timeout-keep-alive 300'
+    directory: /app/{slug}
+    priority: 30
+    stopsignal: TERM
+    stopwaitsecs: 60
+    scalable: false
+    critical: true
+    environment:
+      DATA_DIR: /data/{slug}
+      HF_HOME: /data/{slug}/.cache
+      PYTHONPATH: /app/{slug}
+
+readiness:
+  - type: http
+    target: "http://127.0.0.1:{port}/health"
+    timeout: 600
+
+mount_kinds:
+  "/data": state

@@ -1,0 +1,40 @@
+name: node-frontend
+priority: 60
+
+# Vue / React / plain Vite front ends. In the source packages these run a dev server;
+# inside a bundle the sibling nginx serves the built assets, so the recipe keeps the
+# dev server available but does not make it critical.
+match:
+  image: ["node", "node:*", "*/node:*"]
+  service: ["vue", "react", "vite", "*-vue", "*-react"]
+  package: ["*frontend*", "*vue*", "*react*", "*vite*"]
+
+families: [debian]
+
+install:
+  debian: [nodejs, npm]
+
+copy:
+  - from_mount: /var/www/html
+    dest: /var/www/{slug}
+    kind: code
+    optional: true
+
+port:
+  default: 5173
+  configure:
+    type: cli_flag
+    flag: "--port"
+
+supervisor:
+  - name: "{slug}"
+    command: sh -c 'cd /var/www/{slug} && npm run dev -- --host 0.0.0.0 --port {port}'
+    directory: /var/www/{slug}
+    priority: 45
+    stopsignal: TERM
+    stopwaitsecs: 15
+    scalable: false
+    critical: false
+
+mount_kinds:
+  "/var/www/*": code

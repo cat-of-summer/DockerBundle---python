@@ -1,0 +1,102 @@
+name: laravel
+priority: 70
+
+# Laravel is php-fpm plus a queue worker, so it must outrank the plain php-fpm recipe —
+# but only for services that really are Laravel. A crontab is not evidence: every PHP
+# package here ships one. The name is, so matching keys on that alone.
+match:
+  image: ["php:*fpm*", "php:*-fpm"]
+  service: ["laravel", "laravel-*", "*-laravel"]
+  package: ["*laravel*"]
+
+families: [debian]
+
+install:
+  debian:
+    - php-fpm
+    - php-cli
+    - php-mysql
+    - php-pgsql
+    - php-mbstring
+    - php-xml
+    - php-zip
+    - php-intl
+    - php-gd
+    - php-bcmath
+    - php-curl
+    - php-sqlite3
+    - unzip
+    - git
+    - cron
+
+run:
+  debian:
+    - "curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer"
+    - "rm -f /etc/php/*/fpm/pool.d/www.conf"
+
+shared: php-fpm
+
+copy:
+  - src: php.ini
+    dest: /etc/php/conf.d/{slug}-custom.ini
+    kind: config
+    optional: true
+  - src: opcache.ini
+    dest: /etc/php/conf.d/{slug}-opcache.ini
+    kind: config
+    optional: true
+  - src: crontab
+    dest: /etc/cron.d/{slug}
+    kind: config
+    optional: true
+    chmod: "0644"
+  - from_mount: /var/www/html
+    dest: /var/www/{slug}
+    kind: code
+    optional: true
+
+port:
+  default: 9000
+  configure:
+    type: fpm_pool
+    file: /etc/php/fpm/pool.d/{slug}.conf
+
+# The packages ship a plain user crontab pointing at /var/www/html. /etc/cron.d needs a
+# user column, and the code now lives under the service's own directory, so both are
+# fixed here. Using /etc/cron.d rather than /etc/crontab is what lets several PHP
+# services each keep their own schedule.
+post_copy:
+  - "sed -i -e 's#/var/www/html#/var/www/{slug}#g' -e 's#^\\([^#[:space:]][^[:space:]]*\\([[:space:]]\\+[^[:space:]]\\+\\)\\{4\\}\\)[[:space:]]\\+#\\1 root #' /etc/cron.d/{slug} || true"
+
+supervisor:
+  - name: php-fpm
+    command: php-fpm -F -y /etc/php/fpm/php-fpm.conf
+    priority: 30
+    stopsignal: QUIT
+    stopwaitsecs: 30
+    scalable: false
+    critical: true
+  # Queue workers are the one thing in the bundle that genuinely scales by process
+  # count: they pull from a queue rather than binding a port.
+  - name: queue-{slug}
+    command: php /var/www/{slug}/artisan queue:work --sleep=3 --tries=3 --max-time=3600
+    directory: /var/www/{slug}
+    priority: 60
+    stopsignal: TERM
+    stopwaitsecs: 120
+    scalable: true
+    critical: false
+
+readiness:
+  - type: tcp
+    target: "{port}"
+    timeout: 30
+
+mount_kinds:
+  "/var/www/*": code
+  # These are the upstream php image's paths and the package's own process manager.
+  # The bundle supplies its own equivalents, so copying them in would either land
+  # somewhere the distro php never reads or collide with another service.
+  "/usr/local/etc/php/*": skip
+  "/etc/crontab": skip
+  "/etc/supervisord.conf": skip

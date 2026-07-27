@@ -1,0 +1,43 @@
+name: postgres
+priority: 60
+
+match:
+  image: ["postgres", "postgres:*", "*/postgres:*", "postgis/*"]
+  files: ["postgresql.conf"]
+
+families: [debian]
+
+install:
+  debian: [postgresql, postgresql-client]
+
+copy:
+  - src: postgresql.conf
+    dest: /etc/postgresql/{slug}.conf
+    kind: config
+    optional: true
+
+port:
+  default: 5432
+  configure:
+    type: cli_flag
+    flag: "-p"
+
+supervisor:
+  - name: "{slug}"
+    command: sh -c 'exec su postgres -c "postgres -D /var/lib/postgresql/data -p {port}"'
+    priority: 10
+    # postgres treats SIGINT as a fast shutdown, which is what we want on docker stop.
+    stopsignal: INT
+    stopwaitsecs: 60
+    scalable: false
+    critical: true
+
+readiness:
+  - type: tcp
+    target: "{port}"
+    timeout: 90
+
+mount_kinds:
+  "/var/lib/postgresql/*": state
+  "/etc/postgresql/*": config
+  "/docker-entrypoint-initdb.d": config

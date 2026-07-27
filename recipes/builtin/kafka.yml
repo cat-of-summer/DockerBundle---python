@@ -1,0 +1,42 @@
+name: kafka
+priority: 60
+
+match:
+  image: ["apache/kafka", "apache/kafka:*", "bitnami/kafka*", "confluentinc/cp-kafka*"]
+
+families: [debian]
+
+install:
+  debian: [default-jre-headless]
+
+copy:
+  - src: kafka.properties
+    dest: /etc/kafka/{slug}.properties.template
+    kind: config
+    optional: true
+
+port:
+  default: 9092
+  configure:
+    type: replace
+    file: /etc/kafka/{slug}.properties.template
+    pattern: "listeners"
+
+supervisor:
+  - name: "{slug}"
+    command: /opt/kafka/bin/kafka-server-start.sh /opt/kafka/config/server.properties
+    priority: 15
+    stopsignal: TERM
+    stopwaitsecs: 60
+    scalable: false
+    critical: true
+
+readiness:
+  - type: tcp
+    target: "{port}"
+    timeout: 120
+
+mount_kinds:
+  "/kafka-data": state
+  "/var/lib/kafka*": state
+  "/etc/kafka/*": config

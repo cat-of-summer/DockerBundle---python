@@ -1,0 +1,83 @@
+name: nginx
+priority: 60
+
+match:
+  image: ["nginx", "nginx:*", "*/nginx", "*/nginx:*"]
+  files: ["nginx.conf"]
+  command: ["nginx"]
+
+families: [debian, alpine]
+
+install:
+  debian: [nginx-light, gettext-base, openssl]
+  alpine: [nginx, gettext, openssl]
+
+run:
+  # Debian's nginx ships a default site on :80, which collides with whichever bundled
+  # service claims that port.
+  debian: ["rm -f /etc/nginx/sites-enabled/default"]
+  alpine: ["rm -f /etc/nginx/http.d/default.conf /etc/nginx/conf.d/default.conf"]
+
+# One nginx master serves every nginx-backed service in the bundle. The packages ship
+# `server { }` fragments rather than whole configs, which is exactly what conf.d/ takes,
+# so a second master would only fight over /etc/nginx and the pid file.
+shared: nginx
+
+copy:
+  - src: nginx.conf
+    dest: /etc/nginx/templates/{slug}.conf.template
+    kind: config
+    optional: true
+
+port:
+  default: 80
+  configure:
+    type: nginx_conf
+    file: /etc/nginx/templates/{slug}.conf.template
+
+# The template keeps its own copy per service, so renumbering one leaves the others
+# alone. Done at build time, before envsubst ever sees the file.
+# The capture stops at the indentation rather than including `listen `, so the
+# replacement never puts a digit straight after \1 where sed would read it as \18.
+post_copy:
+  - "sed -i -E 's/^([[:space:]]*)listen[[:space:]]+80([^0-9]|$)/\\1listen {port}\\2/' /etc/nginx/templates/{slug}.conf.template || true"
+
+# Every package's entrypoint reads the single hard-coded path /tmp/nginx.conf.template.
+# Staging this service's own template there immediately before its entrypoint runs lets
+# any number of nginx services coexist without touching their scripts.
+pre_init:
+  - "cp -f /etc/nginx/templates/{slug}.conf.template /tmp/nginx.conf.template 2>/dev/null || true"
+
+# That entrypoint then writes conf.d/default.conf — the same filename for all of them —
+# so the result is filed away under the service's own name before the next one runs.
+#
+# A service without an entrypoint of its own leaves the template unprocessed, so it is
+# installed directly. Plain cp rather than envsubst: the packages that do substitute pass
+# an explicit variable list, and a blanket envsubst would eat nginx's own $uri and
+# $query_string.
+post_init:
+  - "if [ -f /etc/nginx/conf.d/default.conf ]; then mv -f /etc/nginx/conf.d/default.conf /etc/nginx/conf.d/{slug}.conf; fi"
+  - "if [ ! -f /etc/nginx/conf.d/{slug}.conf ] && [ -f /etc/nginx/templates/{slug}.conf.template ]; then cp /etc/nginx/templates/{slug}.conf.template /etc/nginx/conf.d/{slug}.conf; fi"
+
+supervisor:
+  - name: nginx
+    command: nginx -g "daemon off;"
+    priority: 40
+    stopsignal: QUIT
+    stopwaitsecs: 15
+    scalable: false
+    critical: true
+
+# Without this the healthcheck only proves the nginx master is alive, not that this
+# service's server block was ever installed.
+readiness:
+  - type: tcp
+    target: "{port}"
+    timeout: 30
+
+mount_kinds:
+  "/etc/nginx/*": config
+  # Staged per service by pre_init instead: a single fixed path cannot hold the
+  # templates of several nginx services at once.
+  "/tmp/nginx.conf.template": skip
+  "/var/www/*": code

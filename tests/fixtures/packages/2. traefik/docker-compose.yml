@@ -1,0 +1,21 @@
+services:
+  traefik:
+    image: traefik:${TRAEFIK_VERSION}
+    container_name: traefik
+    restart: unless-stopped
+    command:
+      - "--entrypoints.web.address=:80"
+      - "--api.insecure=${TRAEFIK_API}"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./data:/letsencrypt
+    networks:
+      - network
+
+networks:
+  network:
+    external: true
+    name: ${NETWORK}

@@ -1,0 +1,66 @@
+; {{ header_plain }}
+;
+; Programs are ordered by priority, derived from each recipe's base value refined by the
+; depends_on graph. Ordering is not readiness: the entrypoint waits on readiness probes
+; before the processes that need them.
+
+[supervisord]
+nodaemon=true
+user=root
+logfile=/var/log/supervisor/supervisord.log
+logfile_maxbytes=10MB
+logfile_backups=3
+pidfile=/run/bundle/supervisord.pid
+childlogdir=/var/log/supervisor
+
+[unix_http_server]
+file=/run/bundle/supervisor.sock
+chmod=0700
+
+[rpcinterface:supervisor]
+supervisor.rpcinterface_factory = supervisor.rpcinterface:make_main_rpcinterface
+
+; Lets `dockerbundle ps|restart|logs` drive individual services from outside the
+; container without restarting the whole bundle.
+[supervisorctl]
+serverurl=unix:///run/bundle/supervisor.sock
+
+{% for program in plan.programs %}
+[program:{{ program.name }}]
+command={{ program.command }}
+priority={{ program.priority }}
+{% if program.directory %}
+directory={{ program.directory }}
+{% endif %}
+{% if program.autostart %}
+autostart=true
+{% else %}
+; Released by the entrypoint once every service's own init script has finished.
+autostart=false
+{% endif %}
+autorestart={{ 'true' if program.autorestart else 'false' }}
+startsecs={{ program.startsecs }}
+startretries=3
+stopsignal={{ program.stopsignal }}
+stopwaitsecs={{ program.stopwaitsecs }}
+stopasgroup=true
+killasgroup=true
+{% if program.replicas_var %}
+; Scaled through the .env file. This program does not bind a port, so extra copies are
+; safe; port-bound programs are deliberately left unscalable.
+numprocs=%(ENV_{{ program.replicas_var }})s
+process_name=%(program_name)s_%(process_num)02d
+{% endif %}
+{% if program.environment %}
+environment={% for key, value in program.environment.items() %}{{ key }}="{{ value }}"{% if not loop.last %},{% endif %}{% endfor %}
+
+{% endif %}
+; Output goes to the container's stdout unmodified. Piping it through a prefixing
+; filter would make that filter the process supervisord tracks, corrupting exit codes
+; and autorestart, so per-service views come from `dockerbundle logs {{ program.name }}`
+; against the copy in childlogdir instead.
+stdout_logfile=/dev/fd/1
+stdout_logfile_maxbytes=0
+redirect_stderr=true
+
+{% endfor %}

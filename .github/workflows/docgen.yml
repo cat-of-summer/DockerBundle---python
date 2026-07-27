@@ -1,0 +1,13 @@
+name: Generate docs structure
+
+on:
+  push: {}
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  docgen:
+    uses: cat-of-summer/Git_toolkit/.github/workflows/docgen.yml@main
+    secrets: inherit

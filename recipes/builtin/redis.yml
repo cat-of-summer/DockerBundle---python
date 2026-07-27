@@ -1,0 +1,48 @@
+name: redis
+priority: 60
+
+match:
+  image: ["redis", "redis:*", "*/redis:*", "valkey/*"]
+  files: ["redis.conf"]
+
+families: [debian, alpine]
+
+install:
+  debian: [redis-server]
+  alpine: [redis]
+
+copy:
+  - src: redis.conf
+    dest: /etc/redis/{slug}.conf
+    kind: config
+    optional: true
+
+port:
+  default: 6379
+  configure:
+    type: cli_flag
+    flag: "--port"
+
+supervisor:
+  # The config copy is optional, so the command has to cope with it being absent —
+  # redis-server treats a missing config path as a fatal error rather than a default.
+  - name: "{slug}"
+    command: >-
+      sh -c 'if [ -f /etc/redis/{slug}.conf ]; then
+      exec redis-server /etc/redis/{slug}.conf --port {port};
+      else exec redis-server --port {port}; fi'
+    priority: 15
+    stopsignal: TERM
+    stopwaitsecs: 30
+    scalable: false
+    critical: true
+
+readiness:
+  - type: tcp
+    target: "{port}"
+    timeout: 30
+
+mount_kinds:
+  "/data": state
+  "/etc/redis/*": config
+  "/usr/local/etc/redis/*": config

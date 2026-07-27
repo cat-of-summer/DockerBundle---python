@@ -1,0 +1,41 @@
+#!/bin/sh
+# {{ header_plain }}
+#
+# Healthy means every critical program is RUNNING and every readiness probe answers.
+# Non-critical programs (queue workers, dev servers) are reported but never fail the
+# check: a restarting worker is not a reason to take the whole bundle out of rotation.
+set -u
+
+SOCK=unix:///run/bundle/supervisor.sock
+status=0
+
+if ! supervisorctl -s "$SOCK" pid >/dev/null 2>&1; then
+    echo "supervisord is not answering on $SOCK"
+    exit 1
+fi
+
+check_program() {
+    name=$1
+    state=$(supervisorctl -s "$SOCK" status "$name" 2>/dev/null | awk '{print $2}')
+    case "$state" in
+        RUNNING) return 0 ;;
+        "")      echo "$name: unknown to supervisord"; return 1 ;;
+        *)       echo "$name: $state"; return 1 ;;
+    esac
+}
+{% for program in plan.programs %}
+{% if program.critical %}
+check_program {{ program.name }} || status=1
+{% else %}
+check_program {{ program.name }} || echo "{{ program.name }}: not running (non-critical)"
+{% endif %}
+{% endfor %}
+{% for probe in plan.readiness %}
+{% if probe.kind == 'tcp' %}
+nc -z 127.0.0.1 {{ probe.target }} 2>/dev/null || { echo "{{ probe.label }}: port {{ probe.target }} closed"; status=1; }
+{% elif probe.kind == 'http' %}
+curl -fsS -o /dev/null "{{ probe.target }}" 2>/dev/null || { echo "{{ probe.label }}: {{ probe.target }} unreachable"; status=1; }
+{% endif %}
+{% endfor %}
+
+exit "$status"

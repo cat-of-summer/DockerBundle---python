@@ -1,0 +1,44 @@
+name: mysql
+priority: 60
+
+match:
+  image: ["mysql", "mysql:*", "*/mysql:*", "percona:*"]
+  files: ["mysql.cnf"]
+
+families: [debian]
+
+install:
+  debian: [default-mysql-server, default-mysql-client]
+
+copy:
+  - src: mysql.cnf
+    dest: /etc/mysql/conf.d/{slug}.cnf
+    kind: config
+    optional: true
+
+port:
+  default: 3306
+  configure:
+    type: replace
+    file: /etc/mysql/conf.d/{slug}-port.cnf
+    pattern: "port"
+
+supervisor:
+  - name: "{slug}"
+    command: mysqld --user=root
+    # Databases come up before anything that migrates against them.
+    priority: 10
+    stopsignal: TERM
+    stopwaitsecs: 60
+    scalable: false
+    critical: true
+
+readiness:
+  - type: tcp
+    target: "{port}"
+    timeout: 90
+
+mount_kinds:
+  "/var/lib/mysql": state
+  "/etc/mysql/*": config
+  "/docker-entrypoint-initdb.d": config

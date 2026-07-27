@@ -1,0 +1,39 @@
+services:
+  vue:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        NODE_VERSION: ${NODE_VERSION}
+    container_name: vue${INSTANCE}
+    restart: unless-stopped
+    working_dir: /var/www/html
+    volumes:
+      - ./data:/var/www/html
+    networks:
+      - network
+    environment:
+      - VITE_API_BASE_URL=${VITE_API_BASE_URL}
+    ports:
+      - "${VITE_ACCESS}"
+
+  nginx:
+    image: nginx:alpine
+    container_name: vue_nginx${INSTANCE}
+    restart: unless-stopped
+    ports:
+      - "${EXTERNAL_ACCESS}"
+    volumes:
+      - ./data:/var/www/html
+      - ./nginx.conf:/tmp/nginx.conf.template
+    command: ["nginx", "-g", "daemon off;"]
+    entrypoint: ["sh", "-c", "envsubst < /tmp/nginx.conf.template > /etc/nginx/conf.d/default.conf && exec \"$$@\"", "--"]
+    networks:
+      - network
+    depends_on:
+      - vue
+
+networks:
+  network:
+    external: true
+    name: ${NETWORK}

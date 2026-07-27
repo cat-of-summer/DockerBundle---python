@@ -1,0 +1,35 @@
+name: hf-text
+priority: 60
+
+# HuggingFace text-generation-inference. The binary is only distributed inside the
+# upstream image, so it is rootfs-imported; the port is a plain CLI flag.
+match:
+  image: ["ghcr.io/huggingface/text-generation-inference*"]
+
+families: [debian]
+
+port:
+  default: 80
+  configure:
+    type: cli_flag
+    flag: "--port"
+
+supervisor:
+  - name: "{slug}"
+    command: >-
+      text-generation-launcher --model-id ${MODEL:-mistralai/Mistral-7B-Instruct-v0.3}
+      --port {port} --huggingface-hub-cache /data/{slug}
+    priority: 25
+    stopsignal: TERM
+    stopwaitsecs: 120
+    scalable: false
+    critical: true
+
+readiness:
+  - type: http
+    target: "http://127.0.0.1:{port}/health"
+    # Model download and warm-up dominates; the old bundle.sh allowed 900s here.
+    timeout: 900
+
+mount_kinds:
+  "/data": state

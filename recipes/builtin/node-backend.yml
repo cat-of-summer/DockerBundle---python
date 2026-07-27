@@ -1,0 +1,44 @@
+name: node-backend
+priority: 65
+
+match:
+  image: ["node", "node:*", "*/node:*"]
+  service: ["node-backend", "backend", "api", "*-backend"]
+  package: ["*backend*"]
+
+families: [debian]
+
+install:
+  debian: [nodejs, npm]
+
+copy:
+  - from_mount: /var/www/html
+    dest: /var/www/{slug}
+    kind: code
+    optional: true
+
+port:
+  default: 3000
+  configure:
+    type: env_var
+    var: PORT
+
+supervisor:
+  - name: "{slug}"
+    command: sh -c 'cd /var/www/{slug} && npm start'
+    directory: /var/www/{slug}
+    priority: 35
+    stopsignal: TERM
+    stopwaitsecs: 20
+    scalable: false
+    critical: true
+    environment:
+      PORT: "{port}"
+
+readiness:
+  - type: tcp
+    target: "{port}"
+    timeout: 60
+
+mount_kinds:
+  "/var/www/*": code

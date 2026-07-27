@@ -1,0 +1,11 @@
+name: network-placeholder
+priority: 80
+bakeable: false
+reason: >-
+  This service exists only so that compose creates the shared network; it runs
+  `sleep infinity` and has nothing to bake. The bundle joins the network directly,
+  so the placeholder is not carried into the generated compose either.
+
+match:
+  service: ["network", "network-handler"]
+  command: ["sleep infinity"]

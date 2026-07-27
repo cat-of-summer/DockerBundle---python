@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dockerbundle"
+version = "0.1.0"
+description = "Bake several docker-compose services into a single supervisord-managed image"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+
+# Pinned to minor versions: the generated output must stay byte-stable across machines,
+# and the golden tests compare it byte for byte.
+dependencies = [
+    "PyYAML~=6.0",
+    "Jinja2~=3.1",
+    "typer~=0.15",
+    "rich~=13.9",
+    "textual~=1.0",
+    "docker~=7.1",
+    # The docker SDK talks to Docker Desktop over a named pipe on Windows.
+    'pywin32>=308; sys_platform == "win32"',
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest~=8.3",
+    "pytest-cov~=6.0",
+    "ruff~=0.8",
+    "pyinstaller~=6.11",
+]
+
+[project.scripts]
+dockerbundle = "main:main"
+
+[tool.setuptools]
+packages = ["app", "app.wizard", "core", "discover", "recipes", "plan", "render", "ops", "ui"]
+# The entry point lives in a top-level module rather than a package, mirroring ccas.
+py-modules = ["main"]
+
+[tool.setuptools.package-data]
+"ui" = ["../lang/*.json"]
+"recipes" = ["builtin/*.yml"]
+"render" = ["templates/*.j2", "assets/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "docker: needs a working Docker daemon; deselect with -m 'not docker'",
+]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+# Typer declares options as function-call defaults; that is the framework's API, not a
+# mutable-default bug.
+per-file-ignores = { "app/cli.py" = ["B008"] }

@@ -1,0 +1,79 @@
+generator:
+  version: 0.1.0
+  format: 1
+bundle:
+  name: shop
+  variant: cpu
+  image: ghcr.io/acme/shop-bundle:test
+base_image: debian:bookworm-slim
+ports:
+  laravel_nginx_laravel:
+  - original: 9000
+    assigned: 9000
+    moved: false
+  laravel_nginx_nginx:
+  - original: 80
+    assigned: 80
+    moved: false
+  mysql:
+  - original: 3306
+    assigned: 3306
+    moved: false
+  vue_nginx_vite_nginx:
+  - original: 80
+    assigned: 20000
+    moved: true
+  vue_nginx_vite_vue:
+  - original: 5173
+    assigned: 5173
+    moved: false
+programs:
+- name: mysql
+  priority: 10
+  autostart: true
+  scalable: false
+  critical: true
+- name: php-fpm
+  priority: 30
+  autostart: false
+  scalable: false
+  critical: true
+- name: vue_nginx_vite_vue
+  priority: 45
+  autostart: false
+  scalable: false
+  critical: false
+- name: queue-laravel_nginx_laravel
+  priority: 60
+  autostart: false
+  scalable: true
+  critical: false
+- name: nginx
+  priority: 61
+  autostart: false
+  scalable: false
+  critical: true
+baked:
+- laravel_nginx_laravel
+- laravel_nginx_nginx
+- mysql
+- vue_nginx_vite_nginx
+- vue_nginx_vite_vue
+sidecars:
+- traefik
+volumes:
+  mysql_data: /var/lib/mysql
+env_renames:
+  laravel_nginx_laravel:
+    EXTERNAL_ACCESS: LARAVEL_EXTERNAL_ACCESS
+  laravel_nginx_nginx:
+    EXTERNAL_ACCESS: LARAVEL_NGINX_NGINX_EXTERNAL_ACCESS
+  mysql:
+    EXTERNAL_ACCESS: MYSQL_EXTERNAL_ACCESS
+  traefik:
+    EXTERNAL_ACCESS: TRAEFIK_EXTERNAL_ACCESS
+  vue_nginx_vite_nginx:
+    EXTERNAL_ACCESS: VUE_NGINX_VITE_NGINX_EXTERNAL_ACCESS
+  vue_nginx_vite_vue:
+    EXTERNAL_ACCESS: VUE_EXTERNAL_ACCESS
+context_digest: sha256:cda20505f25de5785bdcff0287eeaac4c490a48e82b3a43145ba0fe76c820ed1

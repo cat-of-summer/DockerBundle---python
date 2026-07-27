@@ -1,0 +1,125 @@
+#!/bin/sh
+# {{ header_plain }}
+#
+# Start-up has three phases, because a service's own entrypoint often needs a database
+# that lives in this very container:
+#
+#   1. supervisord comes up with the data services only.
+#   2. Each service's own entrypoint runs, verbatim, after its dependencies are ready.
+#   3. The application processes are released.
+#
+# With nothing to initialise, phases 2 and 3 collapse and everything simply autostarts.
+set -eu
+
+MARKERS=/var/lib/bundle/init
+SOCK=unix:///run/bundle/supervisor.sock
+mkdir -p "$MARKERS" /run/bundle /var/log/supervisor
+
+log() { printf '[bundle] %s\n' "$*"; }
+
+# supervisord fails hard on an undefined %(ENV_*)s reference, so every replica count
+# gets a default before it starts.
+{% for program in plan.programs %}{% if program.replicas_var %}
+: "${{ '{' }}{{ program.replicas_var }}:=1}"; export {{ program.replicas_var }}
+{% endif %}{% endfor %}
+
+# wait_for <tcp|http|command> <target> <timeout> <label>
+wait_for() {
+    kind=$1; target=$2; timeout=$3; label=$4
+    elapsed=0
+    log "waiting for $label ($kind $target, up to ${timeout}s)"
+    while [ "$elapsed" -lt "$timeout" ]; do
+        case "$kind" in
+            tcp)  nc -z 127.0.0.1 "$target" 2>/dev/null && { log "$label ready"; return 0; } ;;
+            http) curl -fsS -o /dev/null "$target" 2>/dev/null && { log "$label ready"; return 0; } ;;
+            *)    sh -c "$target" >/dev/null 2>&1 && { log "$label ready"; return 0; } ;;
+        esac
+        sleep 2
+        elapsed=$((elapsed + 2))
+    done
+    log "WARNING: $label not ready after ${timeout}s; continuing anyway"
+    return 1
+}
+
+# run_init <slug> <script>
+# The service's own entrypoint runs exactly as its author wrote it, with /bin/true as
+# "$@" so its trailing `exec "$@"` returns instead of replacing this shell. dockerbundle
+# never reads or rewrites that script. The marker keeps later starts fast: work such as
+# `composer install` or a model download happens on the first start only.
+run_init() {
+    slug=$1; script=$2
+    [ -x "$script" ] || return 0
+    if [ -f "$MARKERS/$slug.done" ]; then
+        log "$slug already initialised"
+        return 0
+    fi
+    log "initialising $slug"
+    if "$script" /bin/true; then
+        touch "$MARKERS/$slug.done"
+        log "$slug initialised"
+    else
+        log "WARNING: init for $slug failed; leaving it unmarked so it retries next start"
+    fi
+}
+{% if needs_init %}
+
+# ---- phase 1: data services -------------------------------------------------
+log "starting data services"
+/usr/bin/supervisord -c /etc/supervisord.conf &
+SUPERVISORD_PID=$!
+
+# tini signals this shell, not supervisord, so forward shutdown by hand.
+trap 'log "stopping"; kill -TERM "$SUPERVISORD_PID" 2>/dev/null || true' TERM INT
+
+# Give supervisord its control socket before anything talks to it.
+for _ in $(seq 1 30); do
+    [ -S /run/bundle/supervisor.sock ] && break
+    sleep 1
+done
+{% for probe in readiness_before_init %}
+wait_for {{ probe.kind }} {{ probe.target }} {{ probe.timeout }} "{{ probe.label }}" || true
+{% endfor %}
+
+# ---- phase 2: service initialisation ----------------------------------------
+{% for service in plan.baked %}
+{% if service.pre_init or service.init_script or service.post_init %}
+# -- {{ service.spec.slug }}
+{% for step in service.pre_init %}
+{{ step }}
+{% endfor %}
+{% if service.init_script %}
+{% if service.init_env or service.init_cwd %}
+{# A subshell keeps this service's directory and renamed variables from leaking into
+   the next one's init. #}
+(
+{% for key, value in service.init_env.items() %}
+    {{ key }}="{{ value }}"; export {{ key }}
+{% endfor %}
+{% if service.init_cwd %}
+    cd {{ service.init_cwd }} 2>/dev/null || true
+{% endif %}
+    run_init {{ service.spec.slug }} {{ service.init_script }}
+)
+{% else %}
+run_init {{ service.spec.slug }} {{ service.init_script }}
+{% endif %}
+{% endif %}
+{% for step in service.post_init %}
+{{ step }}
+{% endfor %}
+{% endif %}
+{% endfor %}
+
+# ---- phase 3: application processes -----------------------------------------
+{% if plan.deferred %}
+log "starting application processes"
+supervisorctl -s "$SOCK" start {{ plan.deferred | join(' ') }} || true
+{% endif %}
+
+log "bundle up with {{ plan.programs | length }} program(s)"
+wait "$SUPERVISORD_PID"
+{% else %}
+
+log "starting supervisord with {{ plan.programs | length }} program(s)"
+exec /usr/bin/supervisord -n -c /etc/supervisord.conf
+{% endif %}

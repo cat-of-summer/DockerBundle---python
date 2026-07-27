@@ -1,0 +1,83 @@
+{{ header }}
+#
+# Build:  docker build -t {{ plan.name }}:latest .
+# Run:    docker compose --env-file .env up -d
+#
+# This context is self-contained: everything COPY references lives under context/.
+
+{% for stage, image in plan.stages %}
+# Imported wholesale because no recipe matched this image.
+FROM {{ image }} AS {{ stage }}
+
+{% endfor %}
+ARG BASE_IMAGE={{ base_image }}
+FROM ${BASE_IMAGE} AS bundle
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    TZ=${TZ:-UTC} \
+    SUPERVISOR_CONF=/etc/supervisord.conf
+
+{% if family == 'debian' %}
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates curl procps tini supervisor netcat-openbsd \
+{% for package in install %}
+        {{ package }}{% if not loop.last %} \{% else %} \{% endif %}
+
+{% endfor %}
+    && rm -rf /var/lib/apt/lists/*
+{% else %}
+RUN apk add --no-cache \
+        ca-certificates curl procps tini supervisor netcat-openbsd \
+{% for package in install %}
+        {{ package }}{% if not loop.last %} \{% endif %}
+
+{% endfor %}
+
+{% endif %}
+{% if plan.stages %}
+
+# Merge each imported filesystem into the base. A plain `COPY --from=x / /` would
+# overwrite /etc/passwd and friends and break every other service in the bundle, so the
+# merge keeps files that already exist and only appends missing accounts.
+COPY context/_bundle/merge-rootfs.sh /usr/local/bin/merge-rootfs.sh
+RUN chmod +x /usr/local/bin/merge-rootfs.sh
+{% for stage, image in plan.stages %}
+COPY --from={{ stage }} / /tmp/rootfs/{{ stage }}/
+RUN /usr/local/bin/merge-rootfs.sh /tmp/rootfs/{{ stage }}
+{% endfor %}
+{% endif %}
+{% for command in run_steps %}
+RUN {{ command }}
+{% endfor %}
+
+{% for service in plan.baked %}
+{% if service.copies or service.build_steps %}
+# ---- {{ service.spec.slug }} ({{ service.recipe_name }}) {{ '-' * (48 - service.spec.slug|length - service.recipe_name|length) }}
+{% for copy in service.copies %}
+COPY context/{{ copy.context }} {{ copy.target }}
+{% if copy.chmod %}
+RUN chmod {{ copy.chmod }} {{ copy.target }}
+{% endif %}
+{% endfor %}
+{% for step in service.build_steps %}
+RUN {{ step }}
+{% endfor %}
+
+{% endif %}
+{% endfor %}
+COPY context/_bundle/supervisord.conf /etc/supervisord.conf
+COPY context/_bundle/entrypoint.sh /usr/local/bin/bundle-entrypoint.sh
+COPY context/_bundle/healthcheck.sh /usr/local/bin/bundle-healthcheck.sh
+RUN chmod +x /usr/local/bin/bundle-entrypoint.sh /usr/local/bin/bundle-healthcheck.sh \
+    && mkdir -p /var/lib/bundle/init /var/log/supervisor /run/bundle
+
+{% for port in exposed_ports %}
+EXPOSE {{ port }}
+{% endfor %}
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period={{ start_period }}s --retries=3 \
+    CMD /usr/local/bin/bundle-healthcheck.sh
+
+# tini reaps the zombies that cron, composer and npm leave behind.
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/bundle-entrypoint.sh"]

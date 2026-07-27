@@ -1,0 +1,32 @@
+name: hf-embed
+priority: 60
+
+match:
+  image: ["ghcr.io/huggingface/text-embeddings-inference*"]
+
+families: [debian]
+
+port:
+  default: 80
+  configure:
+    type: cli_flag
+    flag: "--port"
+
+supervisor:
+  - name: "{slug}"
+    command: >-
+      text-embeddings-router --model-id ${MODEL:-BAAI/bge-m3}
+      --port {port} --huggingface-hub-cache /data/{slug}
+    priority: 25
+    stopsignal: TERM
+    stopwaitsecs: 60
+    scalable: false
+    critical: true
+
+readiness:
+  - type: http
+    target: "http://127.0.0.1:{port}/health"
+    timeout: 600
+
+mount_kinds:
+  "/data": state
