@@ -16,6 +16,7 @@
 
 ## Файлы
 
+- [.gitattributes](.gitattributes.md)
 - [main.py](main.py.md)
 
 <!-- DOCGEN:END -->
