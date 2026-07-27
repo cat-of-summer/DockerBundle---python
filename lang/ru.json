@@ -27,6 +27,7 @@
   "cli.docker_missing": "недоступен (генерация всё равно работает по compose-файлам)",
   "cli.bad_language": "Неизвестный язык {code!r}. Доступны: {options}.",
   "cli.language_set": "Язык интерфейса: {code}.",
+  "cli.press_enter": "Нажмите Enter, чтобы закрыть...",
 
   "wizard.title": "dockerbundle",
   "wizard.services": "Сервисы",

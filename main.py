@@ -8,6 +8,7 @@ needs it.
 
 from __future__ import annotations
 
+import os
 import sys
 
 
@@ -23,6 +24,49 @@ def _init_language() -> None:
         language = ""
 
     i18n.set_language(language or None)
+
+
+def owns_console() -> bool:
+    """True when this process created the console window it is printing to.
+
+    Double-clicking a .exe in Explorer gives it a fresh console that Windows destroys the
+    moment the process exits, so everything printed vanishes before it can be read.
+    Launching the same binary from cmd or PowerShell attaches it to an existing console
+    instead, and that one must not be held open.
+
+    ``GetConsoleProcessList`` distinguishes the two: a count of 1 means we are the only
+    process on this console, so it is ours and closing it loses the output.
+    """
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.windll.kernel32
+        # The buffer only has to be big enough to tell "1" from "more than 1".
+        buffer = (wintypes.DWORD * 4)()
+        return kernel32.GetConsoleProcessList(buffer, len(buffer)) == 1
+    except (AttributeError, OSError, ValueError):
+        return False
+
+
+def _pause_if_launched_by_double_click() -> None:
+    if not owns_console():
+        return
+    try:
+        if not sys.stdin.isatty() or not sys.stdout.isatty():
+            return
+    except (AttributeError, ValueError):
+        return
+
+    import contextlib
+
+    from ui.i18n import t
+
+    # Closing regardless is fine: the pause is a courtesy, not a step that can fail.
+    with contextlib.suppress(EOFError, KeyboardInterrupt, OSError):
+        input(f"\n{t('cli.press_enter')}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -44,4 +88,6 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    code = main()
+    _pause_if_launched_by_double_click()
+    sys.exit(code)

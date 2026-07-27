@@ -95,3 +95,17 @@ def test_scan_without_a_manifest_exits_usage():
 def test_set_language_rejects_an_unknown_code():
     result = runner.invoke(app, ["set-language", "de"])
     assert result.exit_code == 3
+
+
+def test_owns_console_is_false_off_windows(monkeypatch):
+    import main
+
+    monkeypatch.setattr(main.os, "name", "posix")
+    assert main.owns_console() is False
+
+
+def test_main_returns_the_exit_code():
+    import main
+
+    assert main.main(["--version"]) == 0
+    assert main.main(["generate", "--yes"]) == 3

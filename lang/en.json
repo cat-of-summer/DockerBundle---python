@@ -27,6 +27,7 @@
   "cli.docker_missing": "unreachable (generation still works from compose files)",
   "cli.bad_language": "Unknown language {code!r}. Available: {options}.",
   "cli.language_set": "Interface language set to {code}.",
+  "cli.press_enter": "Press Enter to close...",
 
   "wizard.title": "dockerbundle",
   "wizard.services": "Services",
