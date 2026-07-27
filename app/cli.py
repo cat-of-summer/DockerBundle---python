@@ -66,15 +66,11 @@ def main(
         console.print(f"dockerbundle {__version__}")
         raise typer.Exit()
     if ctx.invoked_subcommand is None:
-        # In a configured project, opening the wizard is the friendly default. Anywhere
-        # else — notably a double-clicked .exe in some arbitrary folder — the useful
-        # answer is the help text, not a wizard complaining about a missing manifest.
-        if (Path.cwd() / MANIFEST_NAME).is_file():
-            _run_wizard(None, False)
-        else:
-            # typer.echo, not console.print: rich would try to read `[OPTIONS]` and
-            # `[ARGS]` in the help text as style markup.
-            typer.echo(ctx.get_help())
+        # Reached only when there is no terminal to prompt on — main.py opens the
+        # interactive shell instead whenever one exists. So print help and let CI move on.
+        # typer.echo, not console.print: rich would try to read `[OPTIONS]` and `[ARGS]`
+        # in the help text as style markup.
+        typer.echo(ctx.get_help())
 
 
 @app.command()
