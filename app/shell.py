@@ -57,10 +57,12 @@ def _print_location() -> None:
     from app.cli import console
 
     cwd = Path.cwd()
-    console.print(t("cli.shell.cwd", path=cwd))
+    # soft_wrap: rich would otherwise fold a long path onto the next line at its own
+    # width, and a broken path is useless to copy back into `cd`.
+    console.print(t("cli.shell.cwd", path=cwd), soft_wrap=True)
     manifest = cwd / MANIFEST_NAME
     if manifest.is_file():
-        console.print(t("cli.shell.manifest", path=manifest))
+        console.print(t("cli.shell.manifest", path=manifest), soft_wrap=True)
     else:
         console.print(t("cli.shell.no_manifest", name=MANIFEST_NAME))
 
@@ -76,7 +78,7 @@ def _change_directory(raw: str) -> None:
     try:
         os.chdir(Path(target).expanduser())
     except OSError:
-        errors.print(f"[red]{t('cli.shell.no_dir', path=target)}[/red]")
+        errors.print(f"[red]{t('cli.shell.no_dir', path=target)}[/red]", soft_wrap=True)
         return
 
     _print_location()
