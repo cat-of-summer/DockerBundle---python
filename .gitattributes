@@ -1,0 +1,9 @@
+# Everything this repository generates or stages ends up inside a Linux image, where a
+# CRLF shebang makes the kernel report "no such file or directory". Checking these out
+# with LF on every platform keeps Windows clones honest and the golden fixtures stable.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.gz  binary
+*.zip binary

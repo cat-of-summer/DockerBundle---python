@@ -191,17 +191,29 @@ pytest tests/test_golden.py --update-golden
 | `ACTION_TRIGGER` | `RELEASE` |
 | `TOOLCHAIN` | `python@3.12` |
 | `RUNS_ON` | `ubuntu-latest,windows-latest` |
-| `BUILD_COMMAND` | `bash build/build.sh` |
+| `BUILD_COMMAND` | `SKIP_TESTS=true bash build/build.sh` |
+| `CI_COMMAND` | `python -m pytest -m "not docker" -q` |
 | `RELEASE_FILES` | `dist/dockerbundle-*` |
 
 `ACTION_TRIGGER` обязателен: по умолчанию он равен `WORKFLOW_DISPATCH`, а при этом
 значении пуш тега не запускает ни сборку, ни релиз. `PUSH` дополнительно гоняет CI на
 каждый пуш в любую ветку.
 
-`BUILD_COMMAND` тоже обязателен, и не только ради бинаря: job `release-publish` ищет
-файлы `RELEASE_FILES` в рабочем дереве после job `ci`. Если не задать ни
-`BUILD_COMMAND`, ни `CI_COMMAND`, job `ci` не запустится, `dist/` не появится и релиз
-упадёт. Отдельный `CI_COMMAND` не нужен — `build/build.sh` прогоняет тесты сам.
+Шаги идут в порядке Build → CI command, поэтому `build/build.sh` ставит зависимости
+(включая pytest), а тесты запускаются отдельным шагом — так падение видно как «тесты», а
+не «сборка». `SKIP_TESTS=true` убирает дубль внутри скрипта. Релиз при этом всё равно
+блокируется: job `release-publish` защищён `!failure()` на job `ci`.
+
+`-m "not docker"` обязателен: smoke-тест собирает настоящий образ, на раннере это лишние
+минуты, а на `windows-latest` он не отработает.
+
+Хотя бы одна из `BUILD_COMMAND` / `CI_COMMAND` должна быть задана — иначе job `ci`
+не запустится, `dist/` не появится, и `release-publish` упадёт, потому что ищет
+`RELEASE_FILES` в рабочем дереве после `ci`.
+
+Тесты написаны под pytest как обычные функции, а не подклассы `unittest.TestCase`.
+`python -m unittest discover` соберёт ноль тестов и вернёт **exit 0** — CI будет зелёным,
+ничего не проверив. Используйте только pytest.
 
 Не задавайте `MULTIPLE_PACKAGES` (иначе тег обязан быть в форме `{branch}/vX.Y.Z`),
 `PUBLISH_METHOD` (утилита не публикует docker-образ) и переменные `DEPLOY_*` (иначе

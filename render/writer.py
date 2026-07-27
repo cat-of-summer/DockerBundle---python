@@ -125,6 +125,44 @@ def _recipe_reason(service: PlannedService) -> str:
     return "kept outside the image by its recipe"
 
 
+def stage_file(source: Path, destination: Path) -> None:
+    """Copy one file into the build context, normalising text to LF.
+
+    Everything staged here ends up inside a Linux image. A checkout on Windows hands us
+    CRLF, and a shebang line ending in ``\\r`` makes the kernel report "no such file or
+    directory" — which is why the source packages carry ``sed -i 's/\\r$//'`` in their own
+    Dockerfiles. Normalising once here fixes it for every file, and keeps the context
+    digest identical whatever the checkout did to line endings.
+
+    Binary files are copied byte for byte: a NUL byte or invalid UTF-8 means the content
+    is not text and must not be touched.
+    """
+    data = source.read_bytes()
+    if b"\x00" not in data:
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            pass
+        else:
+            data = text.replace("\r\n", "\n").encode("utf-8")
+
+    destination.write_bytes(data)
+    shutil.copymode(source, destination)
+
+
+def _stage_tree(source: Path, destination: Path) -> None:
+    if source.is_dir():
+        for entry in sorted(source.rglob("*")):
+            if entry.is_dir():
+                continue
+            target = destination / entry.relative_to(source)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            stage_file(entry, target)
+    else:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        stage_file(source, destination)
+
+
 def stage_context(plan: BundlePlan, context: Path, written: Written) -> None:
     """Copy everything the Dockerfile's COPY lines reference into ``context/``."""
     if context.exists():
@@ -135,10 +173,7 @@ def stage_context(plan: BundlePlan, context: Path, written: Written) -> None:
         for copy in service.copies:
             destination = context / copy.context
             destination.parent.mkdir(parents=True, exist_ok=True)
-            if copy.source.is_dir():
-                shutil.copytree(copy.source, destination, dirs_exist_ok=True)
-            else:
-                shutil.copy2(copy.source, destination)
+            _stage_tree(copy.source, destination)
 
     bundle_dir = context / "_bundle"
     bundle_dir.mkdir(parents=True, exist_ok=True)
