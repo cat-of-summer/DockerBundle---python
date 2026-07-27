@@ -17,6 +17,5 @@
 ## Файлы
 
 - [main.py](main.py.md)
-- [pyproject.toml](pyproject.toml.md)
 
 <!-- DOCGEN:END -->

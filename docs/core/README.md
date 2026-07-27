@@ -3,7 +3,6 @@
 
 ## Файлы
 
-- [__init__.py](__init__.py.md)
 - [config.py](config.py.md)
 - [log.py](log.py.md)
 - [manifest.py](manifest.py.md)

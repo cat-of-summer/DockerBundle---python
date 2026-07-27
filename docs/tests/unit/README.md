@@ -3,7 +3,6 @@
 
 ## Файлы
 
-- [__init__.py](__init__.py.md)
 - [test_builder.py](test_builder.py.md)
 - [test_composefile.py](test_composefile.py.md)
 - [test_envmerge.py](test_envmerge.py.md)
