@@ -66,9 +66,15 @@ def main(
         console.print(f"dockerbundle {__version__}")
         raise typer.Exit()
     if ctx.invoked_subcommand is None:
-        # Bare `dockerbundle` opens the wizard, which is the friendly default; CI always
-        # names a subcommand.
-        ctx.invoke(wizard)
+        # In a configured project, opening the wizard is the friendly default. Anywhere
+        # else — notably a double-clicked .exe in some arbitrary folder — the useful
+        # answer is the help text, not a wizard complaining about a missing manifest.
+        if (Path.cwd() / MANIFEST_NAME).is_file():
+            _run_wizard(None, False)
+        else:
+            # typer.echo, not console.print: rich would try to read `[OPTIONS]` and
+            # `[ARGS]` in the help text as style markup.
+            typer.echo(ctx.get_help())
 
 
 @app.command()
@@ -205,12 +211,13 @@ def generate(
     console.print(t("cli.build_hint", path=written.directory))
 
 
-@app.command()
-def wizard(
-    path: Path = typer.Option(None, "--manifest", "-m"),
-    pull: bool = typer.Option(False, "--pull"),
-) -> None:
-    """Edit bundle.yml interactively."""
+def _run_wizard(path: Path | None, pull: bool) -> None:
+    """Shared body so the bare invocation and the subcommand behave identically.
+
+    Kept out of the Typer command because ``ctx.invoke`` on a Typer command skips Click's
+    parameter processing and hands the function its ``OptionInfo`` sentinels instead of
+    real values.
+    """
     target = _manifest_path(path)
     if not target.is_file():
         console.print(t("cli.wizard_needs_init", path=target))
@@ -224,6 +231,15 @@ def wizard(
 
     manifest = _load_manifest(target)
     run(manifest, pull=pull)
+
+
+@app.command()
+def wizard(
+    path: Path = typer.Option(None, "--manifest", "-m"),
+    pull: bool = typer.Option(False, "--pull"),
+) -> None:
+    """Edit bundle.yml interactively."""
+    _run_wizard(path, pull)
 
 
 @app.command()
