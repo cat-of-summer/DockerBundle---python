@@ -1,0 +1,22 @@
+<!-- DOCGEN:START -->
+# DockerBundle---python
+
+## Папки
+
+- [app](app/)
+- [core](core/)
+- [discover](discover/)
+- [lang](lang/)
+- [ops](ops/)
+- [plan](plan/)
+- [recipes](recipes/)
+- [render](render/)
+- [tests](tests/)
+- [ui](ui/)
+
+## Файлы
+
+- [main.py](main.py.md)
+- [pyproject.toml](pyproject.toml.md)
+
+<!-- DOCGEN:END -->

@@ -1,0 +1,212 @@
+# ╔═══════════════════════════════════════════════════════════════╗
+# ║              AUTO-DOCUMENTATION SYSTEM — HOW IT WORKS         ║
+# ╚═══════════════════════════════════════════════════════════════╝
+#
+# On every push the GitHub Action (docgen.yml) walks all project files
+# and recreates a mirror structure inside docs/:
+#
+#   src/app.php       ->  docs/src/app.php.md
+#   src/utils/math.js ->  docs/src/utils/math.js.md
+#   style.css         ->  docs/style.css.md
+#
+# Every folder inside docs/ gets a README.md — an index with links to all
+# files and subfolders of that level.
+#
+# --- HOW TO ADD DOCUMENTATION ----------------------------------------------
+#
+# A file page (docs/<path>.md) is created ONCE, with a heading, and is never
+# touched by the automation again. Write anywhere in it; no markers needed.
+#
+# The <!-- DOCGEN:START/END --> markers matter ONLY in folder README.md files:
+# the block between them is regenerated, while text above START and below END
+# is preserved.
+#
+# Example (docs/src/README.md):
+#
+#   <!-- DOCGEN:START -->
+#   # src
+#   ...generated index...
+#   <!-- DOCGEN:END -->
+#                             <- anything written here is kept forever
+#   ## Description
+#   Application entry point. Initializes the config and the router.
+#
+# --- HOW UPDATES WORK ------------------------------------------------------
+#
+# * New file in the repo   -> a matching .md is created (heading only)
+# * File removed from repo -> its .md is removed too, empty folders pruned
+# * Existing file page     -> never overwritten
+# * README.md in folders   -> only the DOCGEN:START/END block is refreshed;
+#                             if there are no markers, it is prepended
+#
+# --- HOW TO CONFIGURE FILTERING (.docignore) -------------------------------
+#
+# This file (.docignore) is a blacklist — list what to exclude.
+# Supported forms (.gitignore syntax):
+#
+#   *.ext            - all files with the extension  (example: *.png)
+#   dirname/         - the whole folder              (example: node_modules/)
+#   filename         - a file by name, at any depth  (example: package-lock.json)
+#   path/to/file     - path from the repo root       (example: src/app.js)
+#   dir/*.js         - files in a folder, not nested (example: dist/*.js)
+#   dir/**           - everything inside, recursive   (example: dist/**)
+#   dir/**/*.js      - a mask at any depth            (example: dist/**/*.min.js)
+#   *                - any characters except /        (example: build-*.log)
+#   **               - any characters including /     (example: **/tmp)
+#   ?                - one character except /         (example: file?.txt)
+#   !pattern         - negate a previous rule         (example: !examples/)
+#   # comment        - lines starting with # are ignored
+#
+# A pattern containing a slash is anchored to the repo root; without a slash
+# it matches at any depth (as in .gitignore). Rules are applied in order and
+# the last match wins. Matching is case-insensitive.
+#
+# The file is created automatically on the first run and never overwritten.
+# Edit it freely — changes take effect on the next push.
+# Note: once a file becomes excluded, its page in docs/ is deleted along with
+# whatever text was written in it.
+#
+# ════════════════════════════════════════════════════════════════════════════
+#
+# ═══════════════════════════════════════════════
+# Blacklist for docs generation
+# Syntax: *.ext, dirname/, filename, !negation. Comments: #
+# ═══════════════════════════════════════════════
+
+# Images
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.ico
+*.webp
+*.tiff
+*.tif
+*.svg
+*.avif
+*.heic
+*.heif
+*.raw
+*.cr2
+*.nef
+
+# Documents
+*.doc
+*.md
+*.docx
+*.pdf
+*.xls
+*.xlsx
+*.ppt
+*.pptx
+*.odt
+*.ods
+*.odp
+*.rtf
+*.epub
+LICENSE
+.npmrc
+
+# Audio
+*.mp3
+*.wav
+*.ogg
+*.flac
+*.aac
+*.wma
+*.m4a
+
+# Video
+*.mp4
+*.avi
+*.mov
+*.wmv
+*.flv
+*.mkv
+*.webm
+*.m4v
+*.mpeg
+*.mpg
+
+# Fonts
+*.ttf
+*.otf
+*.woff
+*.woff2
+*.eot
+
+# Archives
+*.zip
+*.rar
+*.7z
+*.tar
+*.gz
+*.bz2
+*.xz
+*.tgz
+
+# Binaries & executables
+*.exe
+*.dll
+*.so
+*.dylib
+*.bin
+*.msi
+*.dmg
+*.deb
+*.rpm
+*.app
+
+# Compiled / object files
+*.o
+*.obj
+*.pyc
+*.pyo
+*.class
+*.jar
+*.war
+
+# Design files
+*.psd
+*.ai
+*.sketch
+*.fig
+*.xd
+
+# Database
+*.sqlite
+*.db
+*.mdb
+
+# Source maps & minified
+*.map
+*.min.js
+*.min.css
+
+# Lock files
+.dockerignore
+.gitignore
+package-lock.json
+yarn.lock
+composer.lock
+Gemfile.lock
+poetry.lock
+pnpm-lock.yaml
+
+# Directories
+node_modules/
+vendor/
+.venv/
+venv/
+dist/
+build/
+.git/
+.github/
+docs/
+__pycache__/
+.cache/
+.tmp/
+.vscode/
+.idea/
+bower_components/
