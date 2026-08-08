@@ -62,6 +62,7 @@ DATAS += [(str(p), "render/assets") for p in sorted((ROOT / "render" / "assets")
 HIDDEN = [
     "app.cli",
     "app.pipeline",
+    "app.shell",
     "app.wizard.app",
     "core.config",
     "core.log",

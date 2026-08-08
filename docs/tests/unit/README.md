@@ -14,6 +14,7 @@
 - [test_mounts.py](test_mounts.py.md)
 - [test_ports.py](test_ports.py.md)
 - [test_recipes.py](test_recipes.py.md)
+- [test_shell.py](test_shell.py.md)
 - [test_writer.py](test_writer.py.md)
 
 <!-- DOCGEN:END -->
