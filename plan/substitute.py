@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 
 #: Placeholders a recipe may use.
-PLACEHOLDERS = ("slug", "port", "name", "package", "prefix")
+PLACEHOLDERS = ("slug", "port", "name", "package", "prefix", "image")
 
 _PATTERN = re.compile(r"\{(" + "|".join(PLACEHOLDERS) + r")\}")
 

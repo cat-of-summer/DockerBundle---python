@@ -58,6 +58,20 @@ def test_program_without_a_command_is_rejected():
         schema.from_dict({"name": "x", "supervisor": [{"name": "p"}]})
 
 
+def test_from_image_copy_needs_a_source_path():
+    with pytest.raises(schema.RecipeError, match="from_image needs a src"):
+        schema.from_dict(
+            {"name": "x", "copy": [{"dest": "/opt/x", "from_image": "example.com/x:1"}]}
+        )
+
+
+def test_entrypoint_mode_defaults_to_auto_and_is_validated():
+    assert schema.from_dict({"name": "x"}).entrypoint == "auto"
+    assert schema.from_dict({"name": "x", "entrypoint": "skip"}).entrypoint == "skip"
+    with pytest.raises(schema.RecipeError, match="entrypoint"):
+        schema.from_dict({"name": "x", "entrypoint": "maybe"})
+
+
 def test_fallback_runs_the_images_own_command():
     service = spec(
         "svc",

@@ -13,10 +13,10 @@ services:
     restart: unless-stopped
     env_file: .env
     ports:
-      - "127.0.0.1:3306:3306"
+      - "${MYSQL_EXTERNAL_ACCESS}"
       - "127.0.0.1:9000:9000"
-      - "127.0.0.1:8081:80"
-      - "127.0.0.1:5173:5173"
+      - "${LARAVEL_NGINX_NGINX_EXTERNAL_ACCESS}"
+      - "${VITE_ACCESS}"
       - "127.0.0.1:20000:20000"
     volumes:
       - mysql_data:/var/lib/mysql

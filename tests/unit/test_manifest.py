@@ -27,6 +27,30 @@ def test_round_trip_preserves_decisions(tmp_path):
     assert reloaded.sources[0].path == "../packages"
 
 
+def test_image_reference_round_trips(tmp_path):
+    # Kept in the manifest so a plain `generate` cannot revert the published reference.
+    manifest = Manifest(name="stand", image="ghcr.io/acme/stand:latest")
+    reloaded = Manifest.load(manifest.save(tmp_path / "bundle.yml"))
+    assert reloaded.image == "ghcr.io/acme/stand:latest"
+
+
+def test_forced_labels_round_trip(tmp_path):
+    manifest = Manifest(name="stand", labels={"traefik.enable": "${TRAEFIK_ENABLE:-true}"})
+    reloaded = Manifest.load(manifest.save(tmp_path / "bundle.yml"))
+    assert reloaded.labels == {"traefik.enable": "${TRAEFIK_ENABLE:-true}"}
+
+
+def test_declared_volumes_round_trip(tmp_path):
+    manifest = Manifest(name="stand", volumes={"artifacts": "/var/www/html/artifacts"})
+    reloaded = Manifest.load(manifest.save(tmp_path / "bundle.yml"))
+    assert reloaded.volumes == {"artifacts": "/var/www/html/artifacts"}
+
+
+def test_declared_volume_must_be_an_absolute_container_path():
+    with pytest.raises(ManifestError, match="absolute path"):
+        Manifest.from_dict({"volumes": {"artifacts": "./data/artifacts"}})
+
+
 def test_a_newer_manifest_version_is_refused(tmp_path):
     path = tmp_path / "bundle.yml"
     path.write_text(yaml.safe_dump({"version": 99, "name": "x"}), encoding="utf-8")

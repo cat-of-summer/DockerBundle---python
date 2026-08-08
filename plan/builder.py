@@ -9,6 +9,7 @@ container in sight.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from core.manifest import Manifest
 from core.model import (
@@ -22,6 +23,7 @@ from core.model import (
     ServiceSpec,
     SupervisorProgram,
     env_prefix,
+    normalise_slug,
 )
 from plan import envmerge, graph, mounts, ports
 from plan.substitute import substitute
@@ -118,13 +120,37 @@ def _copies_for(item: Resolved, port: int | None) -> tuple[list[CopyOp], dict[st
     to relocate paths that were meaningful in the source layout.
     """
     spec, recipe = item.spec, item.recipe
-    values = {"slug": spec.slug, "port": port, "name": spec.name, "prefix": item.prefix}
+    values = {
+        "slug": spec.slug,
+        "port": port,
+        "name": spec.name,
+        "prefix": item.prefix,
+        # Lets a recipe lift files out of the very image the service runs, without
+        # pinning the version a second time inside the recipe.
+        "image": spec.effective_image,
+    }
     copies: list[CopyOp] = []
     consumed: set[str] = set()
     relocated: dict[str, str] = {}
 
     for rule in recipe.copy:
         dest = substitute(rule.dest, values)
+
+        # Straight out of another image: nothing to stage locally, and nothing we could
+        # check either — whether the path exists is the build's business.
+        if rule.from_image:
+            copies.append(
+                CopyOp(
+                    context="",
+                    target=dest,
+                    source=Path(),
+                    kind=rule.kind,
+                    chmod=rule.chmod,
+                    from_image=substitute(rule.from_image, values),
+                    from_path=substitute(rule.src, values),
+                )
+            )
+            continue
 
         if rule.from_mount:
             mount = spec.mount_for(rule.from_mount)
@@ -186,7 +212,15 @@ def _programs_for(
     item: Resolved, port: int | None, extra_env: dict[str, str], warnings: list[str]
 ) -> list[SupervisorProgram]:
     spec, recipe = item.spec, item.recipe
-    values = {"slug": spec.slug, "port": port, "name": spec.name, "prefix": item.prefix}
+    values = {
+        "slug": spec.slug,
+        "port": port,
+        "name": spec.name,
+        "prefix": item.prefix,
+        # Lets a recipe lift files out of the very image the service runs, without
+        # pinning the version a second time inside the recipe.
+        "image": spec.effective_image,
+    }
 
     programs: list[SupervisorProgram] = []
     for rule in recipe.programs:
@@ -300,12 +334,21 @@ def build(
     install: dict[str, list[str]] = {}
     run_steps: dict[str, list[str]] = {}
     shared_seen: set[str] = set()
+    image_stages: dict[str, str] = {}
 
     for item in resolved:
         spec, recipe = item.spec, item.recipe
         assigned = allocation.for_service(spec.slug)
         port = assigned[0].container if assigned else None
-        values = {"slug": spec.slug, "port": port, "name": spec.name, "prefix": item.prefix}
+        values = {
+        "slug": spec.slug,
+        "port": port,
+        "name": spec.name,
+        "prefix": item.prefix,
+        # Lets a recipe lift files out of the very image the service runs, without
+        # pinning the version a second time inside the recipe.
+        "image": spec.effective_image,
+    }
 
         planned = PlannedService(
             spec=spec,
@@ -375,6 +418,18 @@ def build(
             stage = fallback.stage_name(spec.slug)
             planned.stage = stage
             plan.stages.append((stage, spec.effective_image))
+            plan.rootfs_stages.append(stage)
+
+        # One stage per distinct image, however many recipes copy out of it.
+        for copy in planned.copies:
+            if not copy.from_image:
+                continue
+            stage = image_stages.get(copy.from_image)
+            if stage is None:
+                stage = f"img_{normalise_slug(copy.from_image)}"
+                image_stages[copy.from_image] = stage
+                plan.stages.append((stage, copy.from_image))
+            copy.from_stage = stage
 
         for fam, packages in recipe.install.items():
             bucket = install.setdefault(fam, [])
@@ -389,20 +444,21 @@ def build(
                     bucket.append(rendered)
 
         # The service's own entrypoint runs verbatim at container start, exactly as its
-        # author intended. It is never parsed or split.
-        if spec.source_dir is not None:
-            entrypoint = spec.source_dir / "entrypoint.sh"
-            if entrypoint.is_file():
-                planned.init_script = f"/usr/local/bin/entrypoint-{spec.slug}.sh"
-                planned.copies.append(
-                    CopyOp(
-                        context=f"{spec.slug}/entrypoint.sh",
-                        target=planned.init_script,
-                        source=entrypoint,
-                        kind=MountKind.CONFIG,
-                        chmod="0755",
-                    )
+        # author intended. It is never parsed or split. A recipe opts out with
+        # `entrypoint: skip` when the script would not return — one ending in
+        # `exec <server>` would hang the init phase — and starts the service itself.
+        entrypoint = spec.find_entrypoint() if recipe.entrypoint != "skip" else None
+        if entrypoint is not None:
+            planned.init_script = f"/usr/local/bin/entrypoint-{spec.slug}.sh"
+            planned.copies.append(
+                CopyOp(
+                    context=f"{spec.slug}/entrypoint.sh",
+                    target=planned.init_script,
+                    source=entrypoint,
+                    kind=MountKind.CONFIG,
+                    chmod="0755",
                 )
+            )
 
         plan.baked.append(planned)
         plan.readiness.extend(planned.readiness)
@@ -449,6 +505,8 @@ def build(
     for planned in plan.baked:
         for mount in planned.volumes:
             plan.named_volumes[_volume_name(planned.spec.slug, mount)] = mount.target
+    # Declared by hand for state that has no mount of its own to classify.
+    plan.named_volumes.update(manifest.volumes)
 
     plan.install = install
     plan.run_steps = run_steps

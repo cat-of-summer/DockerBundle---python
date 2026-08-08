@@ -3,11 +3,16 @@
 Handles both the short and long syntax for ``volumes:``, ``ports:`` and ``depends_on:``,
 and runs the whole document through :mod:`discover.interpolate` first so that
 ``image: mysql:${MYSQL_VERSION}`` resolves to a real image reference.
+
+``include:`` is expanded here rather than left to the caller, because a project split
+across ``services/*/docker-compose.yml`` has no services at all in its entry file — and a
+package that looks empty is a package we silently drop.
 """
 
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +25,7 @@ from core.model import (
     Origin,
     PortSpec,
     ServiceSpec,
+    dockerfile_path,
     normalise_slug,
 )
 from discover import dockerfile as dockerfile_mod
@@ -37,6 +43,9 @@ OVERRIDE_NAMES = (
 )
 
 _WINDOWS_DRIVE = re.compile(r"^[A-Za-z]:[\\/]")
+
+#: How deep ``include:`` may nest before we treat the chain as a mistake.
+MAX_INCLUDE_DEPTH = 8
 
 
 class ComposeError(ValueError):
@@ -279,6 +288,9 @@ def service_from_mapping(
     declared_volumes: set[str],
     env_vars: list[EnvVar],
     raw_environment: dict[str, str] | None = None,
+    raw_labels: dict[str, str] | None = None,
+    raw_ports: list[str] | None = None,
+    raw_shm: str = "",
 ) -> ServiceSpec:
     ports: list[PortSpec] = []
     for entry in raw.get("ports") or []:
@@ -300,12 +312,10 @@ def service_from_mapping(
 
     # A `build:` service has no image to match recipes against; its Dockerfile does.
     base = ""
-    if build is not None and source_dir is not None:
-        context = source_dir / str(build.get("context", "."))
-        dockerfile = context / str(build.get("dockerfile", "Dockerfile"))
-        if dockerfile.is_file():
-            args = {str(k): str(v) for k, v in _as_mapping(build.get("args")).items()}
-            base = dockerfile_mod.base_image(dockerfile, args)
+    dockerfile = dockerfile_path(source_dir, build)
+    if dockerfile is not None and dockerfile.is_file():
+        args = {str(k): str(v) for k, v in _as_mapping(build.get("args")).items()}
+        base = dockerfile_mod.base_image(dockerfile, args)
 
     return ServiceSpec(
         slug=slug,
@@ -325,13 +335,148 @@ def service_from_mapping(
         env_vars=env_vars,
         mounts=_mounts_from(raw.get("volumes"), declared_volumes),
         ports=ports,
+        raw_ports=list(raw_ports or []),
         depends_on=_depends_on(raw.get("depends_on")),
         labels=_as_mapping(raw.get("labels")),
+        raw_labels=dict(raw_labels or {}),
         healthcheck=raw.get("healthcheck") if isinstance(raw.get("healthcheck"), dict) else None,
         privileged=bool(raw.get("privileged", False)),
         network_mode=str(raw["network_mode"]) if raw.get("network_mode") else None,
         restart=str(raw.get("restart", "")),
+        shm_size=str(raw_shm or raw.get("shm_size") or ""),
     )
+
+
+# ---------------------------------------------------------------------------
+# include:
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _Include:
+    """One resolved ``include:`` entry."""
+
+    path: Path
+    project_directory: Path | None
+    env_files: list[Path]
+
+
+@dataclass
+class _Fragment:
+    """Services contributed by one document, with the directory their paths resolve against."""
+
+    services: dict[str, dict]
+    raw_services: dict[str, Any]
+    source_dir: Path
+    volumes: set[str]
+    env_entries: list[EnvVar] = field(default_factory=list)
+    explicit_dir: bool = False
+    """Set once a ``project_directory:`` has claimed this fragment, so an outer include
+    does not overwrite the decision an inner one already made."""
+
+
+def _include_specs(raw: Any, parent: Path) -> list[_Include]:
+    """Parse an ``include:`` block. Paths resolve against the *including* file."""
+    if raw is None:
+        return []
+    if isinstance(raw, (str, dict)):
+        raw = [raw]
+    if not isinstance(raw, list):
+        raise ComposeError(f"{parent}: include must be a list")
+
+    base = parent.parent
+    specs: list[_Include] = []
+    for item in raw:
+        if isinstance(item, str):
+            targets, project_directory, env_files = [item], None, []
+        elif isinstance(item, dict):
+            targets = _as_list(item.get("path"))
+            project_directory = (
+                base / str(item["project_directory"]) if item.get("project_directory") else None
+            )
+            env_files = [base / str(name) for name in _as_list(item.get("env_file"))]
+        else:
+            raise ComposeError(f"{parent}: include entries must be strings or mappings")
+
+        if not targets:
+            raise ComposeError(f"{parent}: an include entry has no path")
+
+        for target in targets:
+            included = base / target
+            if not included.is_file():
+                raise ComposeError(f"{parent}: included file {target!r} does not exist")
+            specs.append(
+                _Include(path=included, project_directory=project_directory, env_files=env_files)
+            )
+    return specs
+
+
+def _fragments(
+    path: Path,
+    values: dict[str, str],
+    *,
+    source: str,
+    seen: frozenset[Path],
+    depth: int = 0,
+) -> list[_Fragment]:
+    """Expand ``path`` and everything it includes, innermost document first.
+
+    Order matters: compose lets the including file refine a service the included one
+    declared, so the outer document has to be merged last.
+    """
+    resolved = path.resolve()
+    if resolved in seen:
+        raise ComposeError(f"{path}: include cycle")
+    if depth > MAX_INCLUDE_DEPTH:
+        raise ComposeError(f"{path}: include nested deeper than {MAX_INCLUDE_DEPTH} levels")
+    seen = seen | {resolved}
+
+    document = load_document(path, values)
+    # The un-interpolated twin keeps `environment: DB_HOST: ${DB_HOST}` readable, so the
+    # planner can still tell which .env key each process variable reads. It has to follow
+    # the same include chain, or the two would describe different sets of services.
+    raw_document = load_document(path, {}, keep_placeholders=True)
+
+    fragments: list[_Fragment] = []
+    for entry in _include_specs(document.get("include"), path):
+        child_values = dict(values)
+        child_entries: list[EnvVar] = []
+        for env_path in entry.env_files:
+            env = envfile.load(env_path, source=source)
+            child_entries.extend(env.entries)
+            child_values.update(env.as_dict())
+
+        for fragment in _fragments(
+            entry.path, child_values, source=source, seen=seen, depth=depth + 1
+        ):
+            if entry.project_directory is not None and not fragment.explicit_dir:
+                fragment.source_dir = entry.project_directory
+                fragment.explicit_dir = True
+            fragment.env_entries = _merge_env(child_entries, fragment.env_entries)
+            fragments.append(fragment)
+
+    services = document.get("services") or {}
+    if not isinstance(services, dict):
+        raise ComposeError(f"{path}: services must be a mapping")
+    raw_services = raw_document.get("services") or {}
+
+    fragments.append(
+        _Fragment(
+            services={
+                str(name): raw for name, raw in services.items() if isinstance(raw, dict)
+            },
+            raw_services=raw_services if isinstance(raw_services, dict) else {},
+            source_dir=path.parent,
+            volumes=set(document.get("volumes") or {}),
+        )
+    )
+    return fragments
+
+
+def _merge_env(base: list[EnvVar], extra: list[EnvVar]) -> list[EnvVar]:
+    """Concatenate two ``.env`` catalogues, first definition of a key winning."""
+    seen = {entry.key for entry in base}
+    return base + [entry for entry in extra if entry.key not in seen]
 
 
 def load_services(
@@ -361,28 +506,38 @@ def load_services(
     if extra_values:
         values.update(extra_values)
 
-    document = load_document(path, values)
-    services = document.get("services") or {}
-    if not isinstance(services, dict):
-        raise ComposeError(f"{path}: services must be a mapping")
+    fragments = _fragments(path, values, source=package_slug, seen=frozenset())
 
-    # A second, un-interpolated pass keeps `environment: DB_HOST: ${DB_HOST}` intact, so
-    # the planner can still tell which .env key each process variable reads.
-    raw_document = load_document(path, {}, keep_placeholders=True)
-    raw_services = raw_document.get("services") or {}
+    # Fold the include chain into one set of services. The directory a service's paths
+    # resolve against is the one that first declared it — that is where its build context
+    # and entrypoint live; later fragments only refine its settings.
+    services: dict[str, dict] = {}
+    raw_services: dict[str, dict] = {}
+    service_dir: dict[str, Path] = {}
+    service_env: dict[str, list[EnvVar]] = {}
+    declared_volumes: set[str] = set()
 
-    declared_volumes = set(document.get("volumes") or {})
+    for fragment in fragments:
+        declared_volumes |= fragment.volumes
+        for name, raw in fragment.services.items():
+            if name in services:
+                services[name] = deep_merge(services[name], raw)
+            else:
+                services[name] = raw
+                service_dir[name] = fragment.source_dir
+                service_env[name] = fragment.env_entries
+            raw_entry = fragment.raw_services.get(name)
+            if isinstance(raw_entry, dict):
+                raw_services[name] = deep_merge(raw_services.get(name, {}), raw_entry)
+
     multi = len(services) > 1
 
     specs: list[ServiceSpec] = []
     for name, raw in services.items():
-        if not isinstance(raw, dict):
-            continue
-        name = str(name)
         # A single-service package is named after its folder; multi-service packages
         # qualify each service so `nginx` from two packages stays distinguishable.
         slug = f"{package_slug}_{normalise_slug(name)}" if multi else package_slug
-        raw_entry = raw_services.get(name) if isinstance(raw_services, dict) else None
+        raw_entry = raw_services.get(name)
         specs.append(
             service_from_mapping(
                 slug=slug,
@@ -390,12 +545,21 @@ def load_services(
                 package=package,
                 raw=raw,
                 origin=origin,
-                source_dir=directory,
+                source_dir=service_dir[name],
                 declared_volumes=declared_volumes,
-                env_vars=env.entries,
+                env_vars=_merge_env(env.entries, service_env[name]),
                 raw_environment=_as_mapping(
                     raw_entry.get("environment") if isinstance(raw_entry, dict) else None
                 ),
+                raw_labels=_as_mapping(
+                    raw_entry.get("labels") if isinstance(raw_entry, dict) else None
+                ),
+                raw_ports=[
+                    str(entry)
+                    for entry in ((raw_entry or {}).get("ports") or [])
+                    if isinstance(entry, str)
+                ],
+                raw_shm=str((raw_entry or {}).get("shm_size") or ""),
             )
         )
 

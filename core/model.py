@@ -36,6 +36,18 @@ def env_prefix(slug: str) -> str:
     return normalise_slug(slug).upper()
 
 
+def dockerfile_path(source_dir: Path | None, build: dict | None) -> Path | None:
+    """Resolve a compose ``build:`` block to the Dockerfile it names.
+
+    Both parts are relative to the directory the service's paths resolve against, which
+    for an included file is its ``project_directory`` rather than its own folder.
+    """
+    if build is None or source_dir is None:
+        return None
+    context = source_dir / str(build.get("context", "."))
+    return context / str(build.get("dockerfile", "Dockerfile"))
+
+
 class Origin(str, Enum):
     """Where a service was discovered."""
 
@@ -152,13 +164,36 @@ class ServiceSpec:
     env_vars: list[EnvVar] = field(default_factory=list)
     mounts: list[MountSpec] = field(default_factory=list)
     ports: list[PortSpec] = field(default_factory=list)
+    raw_ports: list[str] = field(default_factory=list)
+    """``ports:`` before interpolation, e.g. ``["${EXTERNAL_ACCESS}"]``.
+
+    Packages publish through a single variable holding the whole spec. Resolving it at
+    generation time would freeze the host port into the image's compose file, so the
+    deployment's ``.env`` could no longer move it — the one thing that file is for.
+    """
+
     depends_on: list[str] = field(default_factory=list)
     labels: dict[str, str] = field(default_factory=dict)
+    raw_labels: dict[str, str] = field(default_factory=dict)
+    """``labels:`` before interpolation, e.g. ``Host(`${TRAEFIK_DOMAIN}`)``.
+
+    The bundle re-emits these on its own container, and it must re-emit them as written:
+    a routing domain baked to a literal at generation time could no longer be changed
+    from the deployment's ``.env``, which is the whole point of shipping one.
+    """
+
     healthcheck: dict | None = None
 
     privileged: bool = False
     network_mode: str | None = None
     restart: str = ""
+    shm_size: str = ""
+    """``shm_size:`` as written, e.g. ``${PLAYWRIGHT_SHM_SIZE:-2gb}``.
+
+    A container-wide setting, but one a single service can require: Chromium puts its
+    render surfaces in ``/dev/shm`` and crashes part-way through a long page on Docker's
+    64 MB default. Losing it turns a working stand into one that fails intermittently.
+    """
 
     @property
     def env_prefix(self) -> str:
@@ -168,6 +203,43 @@ class ServiceSpec:
     def effective_image(self) -> str:
         """The image reference recipe matching should consider."""
         return self.image or self.base_image or ""
+
+    @property
+    def dockerfile(self) -> Path | None:
+        """Where this service's Dockerfile lives, for a ``build:`` service."""
+        return dockerfile_path(self.source_dir, self.build)
+
+    @property
+    def declared_labels(self) -> dict[str, str]:
+        """Labels as the author wrote them, falling back to the interpolated copy.
+
+        Sources other than a compose file (a live container, a bare image) only ever have
+        the resolved form.
+        """
+        return self.raw_labels or self.labels
+
+    def find_entrypoint(self) -> Path | None:
+        """The service's own entrypoint script, if the package ships one.
+
+        Looked for beside the Dockerfile first and only then in the package root, because
+        a package that splits into ``services/<name>/`` keeps the two together and
+        qualifies the filename — ``entrypoint.nginx.sh``, not ``entrypoint.sh``. Anchoring
+        on the Dockerfile keeps this independent of how the package is laid out.
+        """
+        names = (f"entrypoint.{self.name}.sh", f"entrypoint.{self.slug}.sh", "entrypoint.sh")
+        directories: list[Path] = []
+        dockerfile = self.dockerfile
+        if dockerfile is not None:
+            directories.append(dockerfile.parent)
+        if self.source_dir is not None and self.source_dir not in directories:
+            directories.append(self.source_dir)
+
+        for directory in directories:
+            for name in names:
+                candidate = directory / name
+                if candidate.is_file():
+                    return candidate
+        return None
 
     def mount_for(self, target: str) -> MountSpec | None:
         for mount in self.mounts:
@@ -189,6 +261,15 @@ class CopyOp:
     source: Path
     kind: MountKind = MountKind.CONFIG
     chmod: str = ""
+
+    from_image: str = ""
+    """Image to take the content from, instead of the build context."""
+
+    from_path: str = ""
+    """Path inside :attr:`from_image`."""
+
+    from_stage: str = ""
+    """Build stage the planner assigned to :attr:`from_image`."""
 
 
 @dataclass
@@ -312,7 +393,14 @@ class BundlePlan:
     """Base family -> extra RUN commands, in recipe order and deduplicated."""
 
     stages: list[tuple[str, str]] = field(default_factory=list)
-    """``(stage name, image)`` pairs for services imported from their upstream image."""
+    """``(stage name, image)`` pairs every ``FROM`` in the Dockerfile needs declared."""
+
+    rootfs_stages: list[str] = field(default_factory=list)
+    """Stages whose whole filesystem is merged into the base.
+
+    A subset of :attr:`stages`: a stage that only serves a ``COPY --from`` must not be
+    merged, or lifting one directory out of an image would drag the rest in anyway.
+    """
 
     readiness: list[ReadinessProbe] = field(default_factory=list)
     post_init: list[str] = field(default_factory=list)

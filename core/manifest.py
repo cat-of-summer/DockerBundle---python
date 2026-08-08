@@ -166,10 +166,34 @@ class Manifest:
     sources: list[SourceRef] = field(default_factory=list)
     services: dict[str, ServiceEntry] = field(default_factory=dict)
     output: str = "dist"
+    image: str = ""
+    """Image reference the generated compose defaults to, e.g. ``ghcr.io/acme/stand:latest``.
+
+    ``generate --image`` overrides it. Keeping it here is what stops a plain regeneration
+    from silently reverting the published reference to ``<name>:latest``.
+    """
+
     variants: list[str] = field(default_factory=lambda: ["cpu"])
     base: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_BASES))
     network: str = "network"
     network_external: bool = True
+    volumes: dict[str, str] = field(default_factory=dict)
+    """Extra named volumes: volume name -> absolute path inside the bundle container.
+
+    Mount classification can only speak about paths a source compose file declared. State
+    that lives *inside* an otherwise baked directory — generated reports and visual
+    baselines under a code tree — has no mount of its own to classify, and without an
+    entry here it would be lost on the next ``docker pull``.
+    """
+
+    labels: dict[str, str] = field(default_factory=dict)
+    """Labels forced onto the bundle container, overriding what the services declared.
+
+    A label describes the whole container, so two services asking for different values of
+    one key cannot both be satisfied. Generation keeps the first and says so; this is
+    where the author overrules that.
+    """
+
     globals: list[str] = field(default_factory=lambda: list(DEFAULT_GLOBALS))
     env_conflicts: dict[str, str] = field(default_factory=dict)
     """Env key -> ``prefix`` | ``keep:<slug>`` | ``value:<literal>``."""
@@ -185,9 +209,12 @@ class Manifest:
             "version": self.version,
             "name": self.name,
             "output": self.output,
+            "image": self.image,
             "variants": list(self.variants),
             "base": dict(self.base),
             "network": {"name": self.network, "external": self.network_external},
+            "volumes": dict(sorted(self.volumes.items())),
+            "labels": dict(sorted(self.labels.items())),
             "port_range": list(self.port_range),
             "globals": list(self.globals),
             "sources": [s.to_dict() for s in self.sources],
@@ -260,6 +287,22 @@ class Manifest:
                     f"got {rule!r}"
                 )
 
+        volumes_raw = raw.get("volumes") or {}
+        if not isinstance(volumes_raw, dict):
+            raise ManifestError("volumes must be a mapping of name -> path in the container")
+        volumes: dict[str, str] = {}
+        for name, target in volumes_raw.items():
+            text = str(target)
+            if not text.startswith("/"):
+                raise ManifestError(
+                    f"volumes.{name}: expected an absolute path inside the container, got {text!r}"
+                )
+            volumes[str(name)] = text
+
+        labels_raw = raw.get("labels") or {}
+        if not isinstance(labels_raw, dict):
+            raise ManifestError("labels must be a mapping of label name -> value")
+
         services_raw = raw.get("services") or {}
         if not isinstance(services_raw, dict):
             raise ManifestError("services must be a mapping of slug -> settings")
@@ -273,10 +316,13 @@ class Manifest:
                 for slug, entry in services_raw.items()
             },
             output=str(raw.get("output", "dist")),
+            image=str(raw.get("image", "")),
             variants=[str(v) for v in variants],
             base=base,
             network=network_name,
             network_external=network_external,
+            volumes=volumes,
+            labels={str(k): str(v) for k, v in labels_raw.items()},
             globals=[str(g) for g in (raw.get("globals") or DEFAULT_GLOBALS)],
             env_conflicts={str(k): str(v) for k, v in (raw.get("env_conflicts") or {}).items()},
             port_range=(low, high),

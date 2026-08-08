@@ -75,7 +75,16 @@ def generate(
     plan = builder.build(context.selected, context.manifest, context.registry, variant=variant)
     plan.warnings = [*context.warnings, *plan.warnings]
     destination = output or context.manifest.output_dir()
-    return writer.render(plan, destination, variant=variant, image_ref=image_ref)
+    # `--image` wins, then the manifest. Without the manifest fallback the published
+    # reference would live only in a flag, and any plain `generate` would quietly put
+    # `<name>:latest` back into the compose file shipped to users.
+    return writer.render(
+        plan,
+        destination,
+        variant=variant,
+        image_ref=image_ref or context.manifest.image,
+        labels=context.manifest.labels,
+    )
 
 
 def conflicts(context: Context) -> list:

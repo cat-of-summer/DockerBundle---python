@@ -28,6 +28,11 @@ FAMILIES = ("debian", "alpine")
 #: Mechanisms for changing the port a service listens on.
 PORT_MECHANISMS = ("nginx_conf", "fpm_pool", "cli_flag", "env_var", "replace", "none")
 
+#: What to do with the package's own ``entrypoint.sh``. ``auto`` runs it during the init
+#: phase; ``skip`` ignores it, for scripts that never return because they end by exec'ing
+#: the server the recipe already starts as a supervisord program.
+ENTRYPOINT_MODES = ("auto", "skip")
+
 #: Values allowed in a recipe's ``mount_kinds``. Besides the real kinds, ``skip`` drops
 #: a mount outright — used for files the bundle replaces with its own, such as a
 #: package's ``supervisord.conf``.
@@ -108,6 +113,13 @@ class CopyRule:
     from_mount: str = ""
     """Take the host side of the compose mount with this target instead of ``src``."""
 
+    from_image: str = ""
+    """Take ``src`` from inside this image rather than from the build context.
+
+    Lets a recipe lift just the part of an upstream image it needs — a language runtime,
+    a jar — instead of falling back to importing that image's whole filesystem.
+    """
+
 
 @dataclass
 class PortRule:
@@ -163,6 +175,14 @@ class Recipe:
     port: PortRule | None = None
     programs: list[ProgramRule] = field(default_factory=list)
     readiness: list[ReadinessRule] = field(default_factory=list)
+
+    entrypoint: str = "auto"
+    """Whether the service's own ``entrypoint.sh`` runs during the init phase.
+
+    ``skip`` is for packages whose entrypoint ends in ``exec <server>``: the init phase
+    calls it and waits for it to return, so such a script would hang start-up forever.
+    A recipe that sets this is expected to start the service itself via ``supervisor:``.
+    """
 
     post_copy: list[str] = field(default_factory=list)
     """Per-service ``RUN`` lines emitted right after that service's ``COPY`` block.
@@ -239,6 +259,9 @@ def _copy_rules(value: Any, where: str) -> list[CopyRule]:
         dest = str(item.get("dest", ""))
         if not dest:
             raise RecipeError(f"{where}[{index}] needs a dest")
+        from_image = str(item.get("from_image", ""))
+        if from_image and not item.get("src"):
+            raise RecipeError(f"{where}[{index}]: from_image needs a src path inside that image")
         rules.append(
             CopyRule(
                 src=str(item.get("src", "")),
@@ -247,6 +270,7 @@ def _copy_rules(value: Any, where: str) -> list[CopyRule]:
                 optional=bool(item.get("optional", True)),
                 chmod=str(item.get("chmod", "")),
                 from_mount=str(item.get("from_mount", "")),
+                from_image=from_image,
             )
         )
     return rules
@@ -358,6 +382,13 @@ def from_dict(raw: Any, *, source: Path | None = None) -> Recipe:
                 f"{', '.join(sorted(MOUNT_KIND_VALUES))}, got {kind!r}"
             )
 
+    entrypoint = str(raw.get("entrypoint", "auto")).lower()
+    if entrypoint not in ENTRYPOINT_MODES:
+        raise RecipeError(
+            f"{where}.entrypoint: expected one of {', '.join(ENTRYPOINT_MODES)}, "
+            f"got {raw.get('entrypoint')!r}"
+        )
+
     return Recipe(
         name=name,
         match=RecipeMatch(
@@ -377,6 +408,7 @@ def from_dict(raw: Any, *, source: Path | None = None) -> Recipe:
         port=_port_rule(raw.get("port"), f"{where}.port"),
         programs=_programs(raw.get("supervisor") or raw.get("programs"), f"{where}.supervisor"),
         readiness=_readiness(raw.get("readiness"), f"{where}.readiness"),
+        entrypoint=entrypoint,
         post_copy=_as_str_list(raw.get("post_copy")),
         pre_init=_as_str_list(raw.get("pre_init")),
         post_init=_as_str_list(raw.get("post_init")),

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from core.manifest import Manifest, ServiceEntry, SourceRef
@@ -110,6 +112,50 @@ def test_service_entrypoints_are_preserved_verbatim(catalog, registry):
     assert laravel.init_script.endswith("entrypoint-laravel_nginx_laravel.sh")
     # It runs where the code was baked, not at the original /var/www/html.
     assert laravel.init_cwd == "/var/www/laravel_nginx_laravel"
+
+
+def test_copy_from_image_adds_a_stage_and_stages_nothing_locally(catalog, registry, tmp_path):
+    # Lifting one directory out of an upstream image, instead of importing the whole
+    # filesystem just to get at it.
+    from recipes.schema import CopyRule
+
+    recipe = registry.recipes["mysql"]
+    registry.recipes["mysql"] = dataclasses.replace(
+        recipe,
+        copy=[
+            *recipe.copy,
+            CopyRule(src="/opt/tool", dest="/opt/tool", from_image="example.com/tool:1"),
+        ],
+    )
+    plan = plan_for(catalog, registry, {"mysql"})
+
+    assert ("img_example_com_tool_1", "example.com/tool:1") in plan.stages
+    # Declared as a stage, but never merged: lifting one directory out of an image must
+    # not drag the rest of it in.
+    assert plan.rootfs_stages == []
+
+    mysql = next(s for s in plan.baked if s.spec.slug == "mysql")
+    lifted = next(c for c in mysql.copies if c.from_image)
+    assert lifted.from_stage == "img_example_com_tool_1"
+
+    from render import writer
+
+    writer.render(plan, tmp_path / "dist")
+    dockerfile = (tmp_path / "dist" / "Dockerfile").read_text(encoding="utf-8")
+    assert "COPY --from=img_example_com_tool_1 /opt/tool /opt/tool" in dockerfile
+    assert "merge-rootfs.sh" not in dockerfile
+
+
+def test_recipe_can_skip_the_service_entrypoint(catalog, registry):
+    # `entrypoint: skip` is for scripts that end in `exec <server>`: run_init waits for a
+    # return that never comes, so the recipe starts the service itself instead.
+    registry.recipes["laravel"] = dataclasses.replace(
+        registry.recipes["laravel"], entrypoint="skip"
+    )
+    plan = plan_for(catalog, registry, ALL, **RESOLVED)
+    laravel = next(s for s in plan.baked if s.spec.slug == "laravel_nginx_laravel")
+    assert not laravel.init_script
+    assert not any(copy.target.startswith("/usr/local/bin/entrypoint-") for copy in laravel.copies)
 
 
 def test_nginx_templates_are_staged_per_service(catalog, registry):

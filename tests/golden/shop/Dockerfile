@@ -5,7 +5,10 @@
 #
 # This context is self-contained: everything COPY references lives under context/.
 
+# Declared before the first FROM so that it is global. An ARG that follows a FROM belongs
+# to that stage alone, and the base name of any later stage would then expand to nothing.
 ARG BASE_IMAGE=debian:bookworm-slim
+
 FROM ${BASE_IMAGE} AS bundle
 
 ENV DEBIAN_FRONTEND=noninteractive \

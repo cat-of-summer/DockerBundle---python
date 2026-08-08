@@ -101,3 +101,50 @@ def referenced_names(text: str) -> set[str]:
         if name:
             names.add(name)
     return names
+
+
+def strip_defaults(text: str) -> str:
+    """Reduce every reference to its bare ``${NAME}``, dropping defaults and messages.
+
+    Lets two strings be compared for what they will resolve to rather than for how they
+    were typed: ``${X}`` and ``${X:-true}`` name the same value whenever ``X`` is set,
+    and one package writing the default while another leaves it out is a difference in
+    style, not in configuration.
+    """
+
+    def replace(match: re.Match[str]) -> str:
+        if match.group("escaped"):
+            return match.group(0)
+        return "${" + (match.group("named") or match.group("braced")) + "}"
+
+    return _PATTERN.sub(replace, text)
+
+
+def has_default(text: str) -> bool:
+    """True when any reference in ``text`` carries a ``:-``/``-`` fallback."""
+    return any(match.group("sep") in ("-", ":-") for match in _PATTERN.finditer(text))
+
+
+def rename_variables(text: str, mapping: dict[str, str]) -> str:
+    """Rewrite variable *names* in ``text``, leaving everything else as written.
+
+    Used when a key had to be renamed to survive the merge into one ``.env``: a label
+    reading ``${TRAEFIK_DOMAIN}`` has to follow the key to ``${NGINX_TRAEFIK_DOMAIN}``
+    while keeping its defaults and surrounding syntax intact.
+    """
+    if not mapping:
+        return text
+
+    def replace(match: re.Match[str]) -> str:
+        if match.group("escaped"):
+            return match.group(0)
+        name = match.group("named") or match.group("braced")
+        renamed = mapping.get(name)
+        if renamed is None:
+            return match.group(0)
+        sep = match.group("sep")
+        if sep is None:
+            return "${" + renamed + "}"
+        return "${" + renamed + sep + (match.group("arg") or "") + "}"
+
+    return _PATTERN.sub(replace, text)

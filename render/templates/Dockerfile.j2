@@ -5,12 +5,19 @@
 #
 # This context is self-contained: everything COPY references lives under context/.
 
+# Declared before the first FROM so that it is global. An ARG that follows a FROM belongs
+# to that stage alone, and the base name of any later stage would then expand to nothing.
+ARG BASE_IMAGE={{ base_image }}
+
 {% for stage, image in plan.stages %}
+{% if stage in plan.rootfs_stages %}
 # Imported wholesale because no recipe matched this image.
+{% else %}
+# A recipe takes named paths out of this image; nothing else from it enters the bundle.
+{% endif %}
 FROM {{ image }} AS {{ stage }}
 
 {% endfor %}
-ARG BASE_IMAGE={{ base_image }}
 FROM ${BASE_IMAGE} AS bundle
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -35,14 +42,14 @@ RUN apk add --no-cache \
 {% endfor %}
 
 {% endif %}
-{% if plan.stages %}
+{% if plan.rootfs_stages %}
 
 # Merge each imported filesystem into the base. A plain `COPY --from=x / /` would
 # overwrite /etc/passwd and friends and break every other service in the bundle, so the
 # merge keeps files that already exist and only appends missing accounts.
 COPY context/_bundle/merge-rootfs.sh /usr/local/bin/merge-rootfs.sh
 RUN chmod +x /usr/local/bin/merge-rootfs.sh
-{% for stage, image in plan.stages %}
+{% for stage in plan.rootfs_stages %}
 COPY --from={{ stage }} / /tmp/rootfs/{{ stage }}/
 RUN /usr/local/bin/merge-rootfs.sh /tmp/rootfs/{{ stage }}
 {% endfor %}
@@ -55,7 +62,11 @@ RUN {{ command }}
 {% if service.copies or service.build_steps %}
 # ---- {{ service.spec.slug }} ({{ service.recipe_name }}) {{ '-' * (48 - service.spec.slug|length - service.recipe_name|length) }}
 {% for copy in service.copies %}
+{% if copy.from_stage %}
+COPY --from={{ copy.from_stage }} {{ copy.from_path }} {{ copy.target }}
+{% else %}
 COPY context/{{ copy.context }} {{ copy.target }}
+{% endif %}
 {% if copy.chmod %}
 RUN chmod {{ copy.chmod }} {{ copy.target }}
 {% endif %}

@@ -12,6 +12,11 @@ services:
     container_name: {{ plan.name }}${INSTANCE:-}
     restart: unless-stopped
     env_file: .env
+{% if shm_size %}
+    # Asked for by one of the baked services. Docker's 64 MB default is where Chromium
+    # runs out of shared memory part-way through a page.
+    shm_size: {{ shm_size }}
+{% endif %}
 {% if published_ports %}
     ports:
 {% for entry in published_ports %}
@@ -42,6 +47,9 @@ services:
               capabilities: [gpu]
 {% endif %}
 {% if labels %}
+    # Carried over from the services that were baked in. A label describes the whole
+    # container, so where two of them disagreed the first was kept and the clash was
+    # reported at generation time.
     labels:
 {% for label in labels %}
       - "{{ label }}"
@@ -77,6 +85,12 @@ services:
 {% endif %}
     networks:
       - network
+{% if sidecar_labels.get(service.spec.name) %}
+    labels:
+{% for label in sidecar_labels[service.spec.name] %}
+      - "{{ label }}"
+{% endfor %}
+{% endif %}
 {% endfor %}
 {% if plan.named_volumes %}
 
