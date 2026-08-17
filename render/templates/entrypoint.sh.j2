@@ -71,9 +71,15 @@ SUPERVISORD_PID=$!
 # tini signals this shell, not supervisord, so forward shutdown by hand.
 trap 'log "stopping"; kill -TERM "$SUPERVISORD_PID" 2>/dev/null || true' TERM INT
 
-# Give supervisord its control socket before anything talks to it.
+# Give supervisord its control socket before anything talks to it. The socket lives in the
+# image's writable layer, so a restart of an existing container still has the previous
+# start's socket file sitting there; supervisord unlinks it only once it is ready to bind
+# its own. Testing for the file would therefore succeed immediately and phase 3 would talk
+# to a dead socket, leaving every deferred program stopped. Clear it, then wait for
+# supervisord itself to answer.
+rm -f /run/bundle/supervisor.sock
 for _ in $(seq 1 30); do
-    [ -S /run/bundle/supervisor.sock ] && break
+    supervisorctl -s "$SOCK" pid >/dev/null 2>&1 && break
     sleep 1
 done
 {% for probe in readiness_before_init %}
@@ -113,7 +119,8 @@ run_init {{ service.spec.slug }} {{ service.init_script }}
 # ---- phase 3: application processes -----------------------------------------
 {% if plan.deferred %}
 log "starting application processes"
-supervisorctl -s "$SOCK" start {{ plan.deferred | join(' ') }} || true
+supervisorctl -s "$SOCK" start {{ plan.deferred | join(' ') }} \
+    || log "WARNING: supervisorctl could not start the application processes"
 {% endif %}
 
 log "bundle up with {{ plan.programs | length }} program(s)"
