@@ -64,7 +64,7 @@ def build(spec: ServiceSpec) -> Recipe:
         # fails loudly at start-up rather than a silently broken image.
         command = (
             f"sh -c 'echo \"[{slug}] no start command known; "
-            "set one in bundle.yml or write a recipe\" >&2; exit 1'"
+            "set one in docker-bundle.yml or write a recipe\" >&2; exit 1'"
         )
 
     port_rule = None

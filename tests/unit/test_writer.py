@@ -38,7 +38,7 @@ def test_crlf_is_normalised_when_staging(tmp_path):
 
 
 def test_staging_is_byte_identical_regardless_of_line_endings(tmp_path):
-    # The context digest recorded in bundle.lock.yml must not depend on how git checked
+    # The context digest recorded in the lock file must not depend on how git checked
     # the sources out, or the same commit produces different lock files per platform.
     crlf = tmp_path / "crlf.conf"
     crlf.write_bytes(b"server {\r\n    listen 80;\r\n}\r\n")
@@ -233,7 +233,7 @@ def test_different_variables_are_still_a_conflict():
     ]
     labels, warnings = _labels(plan)
     assert labels == ["traefik.enable=${NGINX_TRAEFIK_ENABLE}"]
-    assert any("bundle.yml" in warning for warning in warnings)
+    assert any("docker-bundle.yml" in warning for warning in warnings)
 
 
 def test_manifest_labels_override_the_services():

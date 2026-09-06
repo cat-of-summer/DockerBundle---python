@@ -1,6 +1,6 @@
-"""Textual wizard for editing ``bundle.yml``.
+"""Textual wizard for editing ``docker-bundle.yml``.
 
-The wizard is a *view*. Every decision it collects is written back to the manifest and
+The wizard is a *view*. Every decision it collects is written back to the configuration and
 generation goes through the same :mod:`app.pipeline` the CLI uses, so what is previewed
 here is exactly what CI produces. No planning logic lives in this module.
 """
@@ -27,8 +27,8 @@ from textual.widgets import (
 from textual.widgets.selection_list import Selection
 
 from app import pipeline
-from core.manifest import Manifest, ServiceEntry
-from core.model import MountMode
+from core.manifest import EnvRule, Manifest, ServiceEntry
+from core.model import MountMode, ServiceMode
 from ui.i18n import t
 
 
@@ -89,7 +89,6 @@ class WizardApp(App[None]):
     def _service_options(self) -> list[Selection]:
         options: list[Selection] = []
         for spec in self.context.discovery.services:
-            entry = self.manifest.services.get(spec.slug)
             recipe, is_fallback = self.context.registry.resolve(spec)
             if recipe.bakeable:
                 placement = t("wizard.bake")
@@ -98,8 +97,21 @@ class WizardApp(App[None]):
                 placement = f"{t('wizard.unbakeable')}: {why}"
             suffix = " *" if is_fallback else ""
             label = f"{spec.slug:34} {recipe.name}{suffix:2}  {placement}"
-            options.append(Selection(label, spec.slug, entry is not None and entry.enabled))
+            options.append(Selection(label, spec.slug, self._included(spec.slug, recipe)))
         return options
+
+    def _included(self, slug: str, recipe) -> bool:
+        """Whether this service currently takes part in the bundle at all.
+
+        Ticked covers baking, running alongside as a sidecar and being left external:
+        the checkbox answers "is this stand's service part of the picture", and which of
+        the three it is stays a ``mode:`` decision the list has no room to show.
+        """
+        default = ServiceMode.BAKE if recipe.bakeable else ServiceMode.SIDECAR
+        return (
+            self.manifest.service_mode(slug, self.context.features, default=default)
+            is not ServiceMode.OFF
+        )
 
     def _mount_options(self) -> list[Selection]:
         from plan import mounts as mounts_mod
@@ -163,7 +175,9 @@ class WizardApp(App[None]):
         pairs = []
         for spec in self.context.selected:
             recipe, _ = self.context.registry.resolve(spec)
-            if recipe.bakeable:
+            default = ServiceMode.BAKE if recipe.bakeable else ServiceMode.SIDECAR
+            mode = self.manifest.service_mode(spec.slug, self.context.features, default=default)
+            if mode is ServiceMode.BAKE:
                 pairs.append((spec, recipe))
 
         allocation = ports_mod.allocate(
@@ -190,7 +204,13 @@ class WizardApp(App[None]):
                 spec = self._by_slug[slug]
                 entry = ServiceEntry(slug=slug, package=spec.package, service=spec.name)
                 self.manifest.services[slug] = entry
-            entry.enabled = slug in selected
+            if slug in selected:
+                # Only lift an explicit "off"; a service the author put outside the image
+                # on purpose stays a sidecar or external when it is ticked back on.
+                if entry.mode is ServiceMode.OFF:
+                    entry.mode = None
+            else:
+                entry.mode = ServiceMode.OFF
 
         baked = set(self.query_one("#mounts", SelectionList).selected)
         for slug, entry in self.manifest.services.items():
@@ -222,13 +242,13 @@ class WizardApp(App[None]):
                 continue
             pressed = radio.pressed_button
             if pressed is not None and pressed.name:
-                self.manifest.env_conflicts[conflict.key] = pressed.name
+                self.manifest.env[conflict.key] = EnvRule(rule=pressed.name)
 
         # Re-resolve the selection so ports and conflicts reflect the new choices.
         self.context.selected = [
             spec
             for spec in self.context.discovery.services
-            if self.manifest.services.get(spec.slug, ServiceEntry(slug=spec.slug)).enabled
+            if self._included(spec.slug, self.context.registry.resolve(spec)[0])
         ]
 
     def _status(self, message: str) -> None:

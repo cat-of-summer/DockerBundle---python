@@ -1,11 +1,12 @@
 generator:
-  version: 0.1.0
-  format: 1
+  version: 0.2.0
+  format: 2
 bundle:
   name: shop
   variant: cpu
   image: ghcr.io/acme/shop-bundle:test
 base_image: debian:bookworm-slim
+features: {}
 ports:
   laravel_nginx_laravel:
   - original: 9000
@@ -61,6 +62,7 @@ baked:
 - vue_nginx_vite_vue
 sidecars:
 - traefik
+external: []
 volumes:
   mysql_data: /var/lib/mysql
 env_renames:
@@ -76,4 +78,4 @@ env_renames:
     EXTERNAL_ACCESS: VUE_NGINX_VITE_NGINX_EXTERNAL_ACCESS
   vue_nginx_vite_vue:
     EXTERNAL_ACCESS: VUE_EXTERNAL_ACCESS
-context_digest: sha256:c2e55d28b3fb5e899533c53d4d277a3a684293838a7feee98e6c6356f658d4df
+context_digest: sha256:1119e30bd56e9e7c181ce902442b577056da6119f7d57b83edbdd98a76a2eff9

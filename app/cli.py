@@ -14,9 +14,11 @@ from rich.console import Console
 from rich.table import Table
 
 from core import config as config_mod
+from core import features as features_mod
 from core.manifest import Manifest, ManifestError
 from core.paths import MANIFEST_NAME
 from core.version import __version__
+from recipes.schema import RecipeError
 from ui.i18n import t
 
 app = typer.Typer(
@@ -43,6 +45,27 @@ def _load_manifest(path: Path) -> Manifest:
     try:
         return Manifest.load(path)
     except ManifestError as exc:
+        errors.print(f"[red]{exc}[/red]")
+        raise typer.Exit(EXIT_USAGE) from exc
+
+
+def _features(manifest: Manifest, enable: list[str], disable: list[str]) -> dict[str, bool]:
+    try:
+        return features_mod.apply_overrides(
+            manifest.features, enable=list(enable), disable=list(disable)
+        )
+    except features_mod.FeatureError as exc:
+        errors.print(f"[red]{exc}[/red]")
+        raise typer.Exit(EXIT_USAGE) from exc
+
+
+def _context(manifest: Manifest, *, pull: bool, features: dict[str, bool]):
+    """Run discovery, turning configuration problems into a usable exit code."""
+    from app import pipeline
+
+    try:
+        return pipeline.load(manifest, pull=pull, features=features)
+    except (ManifestError, RecipeError) as exc:
         errors.print(f"[red]{exc}[/red]")
         raise typer.Exit(EXIT_USAGE) from exc
 
@@ -75,14 +98,18 @@ def main(
 
 @app.command()
 def init(
-    path: Path = typer.Option(None, "--manifest", "-m", help="Where to write bundle.yml."),
+    path: Path = typer.Option(
+        None, "--config", "-c", help=f"Where to write {MANIFEST_NAME}."
+    ),
     source: list[str] = typer.Option(
         [], "--source", "-s", help="Catalogue directory or compose file to scan. Repeatable."
     ),
     name: str = typer.Option("", "--name", help="Bundle name. Defaults to the directory name."),
-    force: bool = typer.Option(False, "--force", help="Overwrite an existing bundle.yml."),
+    force: bool = typer.Option(
+        False, "--force", help=f"Overwrite an existing {MANIFEST_NAME}."
+    ),
 ) -> None:
-    """Create a bundle.yml in the current project."""
+    """Create a docker-bundle.yml in the current project."""
     target = _manifest_path(path)
     if target.exists() and not force:
         errors.print(f"[red]{t('cli.manifest_exists', path=target)}[/red]")
@@ -117,15 +144,17 @@ def init(
 
 @app.command()
 def scan(
-    path: Path = typer.Option(None, "--manifest", "-m"),
+    path: Path = typer.Option(None, "--config", "-c"),
     source: list[str] = typer.Option(
-        [], "--source", "-s", help="Scan this instead of bundle.yml."
+        [], "--source", "-s", help=f"Scan this instead of {MANIFEST_NAME}."
     ),
+    enable: list[str] = typer.Option([], "--enable", help="Turn a feature on. Repeatable."),
+    disable: list[str] = typer.Option([], "--disable", help="Turn a feature off. Repeatable."),
     pull: bool = typer.Option(False, "--pull", help="Pull images that are missing locally."),
 ) -> None:
     """List the services the configured sources provide, and the recipe each matches."""
-    from app import pipeline
     from core.manifest import SourceRef
+    from core.model import ServiceMode
 
     if source:
         manifest = Manifest(
@@ -138,7 +167,8 @@ def scan(
     else:
         manifest = _load_manifest(_manifest_path(path))
 
-    context = pipeline.load(manifest, pull=pull)
+    features = _features(manifest, enable, disable)
+    context = _context(manifest, pull=pull, features=features)
 
     table = Table(title=t("cli.scan_title", count=len(context.discovery.services)))
     table.add_column(t("cli.col_service"), style="cyan", no_wrap=True)
@@ -146,41 +176,77 @@ def scan(
     table.add_column(t("cli.col_recipe"), style="magenta")
     table.add_column(t("cli.col_where"))
 
+    used_fallback = False
     for spec in context.discovery.services:
         entry = manifest.services.get(spec.slug)
         forced = entry.recipe if entry else ""
-        recipe, is_fallback = context.registry.resolve(spec, forced=forced)
-        override = entry.bakeable if entry else None
-        bakeable = recipe.bakeable if override is None else override
-        where = t("cli.in_image") if bakeable else t("cli.sidecar")
+        try:
+            recipe, is_fallback = context.registry.resolve(spec, forced=forced)
+        except KeyError:
+            table.add_row(spec.slug, spec.effective_image or "-", f"{forced} ?", "-")
+            continue
+        used_fallback = used_fallback or is_fallback
+
+        default = ServiceMode.BAKE if recipe.bakeable else ServiceMode.SIDECAR
+        try:
+            mode = manifest.service_mode(spec.slug, features, default=default)
+        except ManifestError as exc:
+            errors.print(f"[red]{exc}[/red]")
+            raise typer.Exit(EXIT_USAGE) from exc
+
         name = recipe.name + (" *" if is_fallback else "")
-        table.add_row(spec.slug, spec.effective_image or "-", name, where)
+        table.add_row(spec.slug, spec.effective_image or "-", name, _where(mode))
 
     console.print(table)
+    if manifest.features:
+        console.print(
+            t(
+                "cli.scan_features",
+                features=", ".join(
+                    f"{flag}={'on' if value else 'off'}"
+                    for flag, value in sorted(features.items())
+                ),
+            )
+        )
     _show_warnings(context.warnings)
-    used_fallback = any(context.registry.resolve(s)[1] for s in context.discovery.services)
+    for problem in context.discovery.errors:
+        errors.print(f"[red]-[/red] {problem}")
     if used_fallback:
         console.print(t("cli.scan_fallback_note"))
 
 
+def _where(mode) -> str:
+    from core.model import ServiceMode
+
+    return {
+        ServiceMode.BAKE: t("cli.in_image"),
+        ServiceMode.SIDECAR: t("cli.sidecar"),
+        ServiceMode.EXTERNAL: t("cli.external"),
+        ServiceMode.OFF: t("cli.off"),
+    }[mode]
+
+
 @app.command()
 def generate(
-    path: Path = typer.Option(None, "--manifest", "-m"),
+    path: Path = typer.Option(None, "--config", "-c"),
     output: Path = typer.Option(None, "--output", "-o", help="Override the output directory."),
     variant: str = typer.Option("", "--variant", help="Which base to build against (cpu, cuda)."),
     image: str = typer.Option(
         "", "--image", help="Image reference written into compose and .env."
     ),
+    enable: list[str] = typer.Option([], "--enable", help="Turn a feature on. Repeatable."),
+    disable: list[str] = typer.Option([], "--disable", help="Turn a feature off. Repeatable."),
     pull: bool = typer.Option(False, "--pull", help="Pull images that are missing locally."),
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Non-interactive: fail instead of asking anything."
     ),
 ) -> None:
-    """Render bundle.yml into dist/. This is what CI runs."""
+    """Render docker-bundle.yml into dist/. This is what CI runs."""
     from app import pipeline
 
     manifest = _load_manifest(_manifest_path(path))
-    context = pipeline.load(manifest, pull=pull)
+    features = _features(manifest, enable, disable)
+    context = _context(manifest, pull=pull, features=features)
     pipeline.ensure_entries(context)
 
     if not context.selected:
@@ -201,6 +267,9 @@ def generate(
         if not yes:
             errors.print(t("cli.blocked_hint"))
         raise typer.Exit(EXIT_BLOCKED) from exc
+    except (ManifestError, RecipeError) as exc:
+        errors.print(f"[red]{exc}[/red]")
+        raise typer.Exit(EXIT_USAGE) from exc
 
     _show_warnings(written.warnings)
     console.print(f"[green]{t('cli.generated', path=written.directory)}[/green]")
@@ -231,16 +300,16 @@ def _run_wizard(path: Path | None, pull: bool) -> None:
 
 @app.command()
 def wizard(
-    path: Path = typer.Option(None, "--manifest", "-m"),
+    path: Path = typer.Option(None, "--config", "-c"),
     pull: bool = typer.Option(False, "--pull"),
 ) -> None:
-    """Edit bundle.yml interactively."""
+    """Edit docker-bundle.yml interactively."""
     _run_wizard(path, pull)
 
 
 @app.command()
 def doctor() -> None:
-    """Check the environment: Docker, recipes, manifest."""
+    """Check the environment: Docker, recipes, configuration."""
     from discover import dockerclient
     from recipes.match import Registry
 
@@ -257,18 +326,26 @@ def doctor() -> None:
     table.add_row("Docker", docker_status)
 
     manifest_path = Path.cwd() / MANIFEST_NAME
-    table.add_row(
-        MANIFEST_NAME,
-        f"[green]{manifest_path}[/green]"
-        if manifest_path.is_file()
-        else f"[yellow]{t('cli.not_found')}[/yellow]",
-    )
+    manifest: Manifest | None = None
+    if manifest_path.is_file():
+        try:
+            manifest = Manifest.load(manifest_path)
+            table.add_row(MANIFEST_NAME, f"[green]{manifest_path}[/green]")
+        except ManifestError as exc:
+            table.add_row(MANIFEST_NAME, f"[red]{exc}[/red]")
+    else:
+        table.add_row(MANIFEST_NAME, f"[yellow]{t('cli.not_found')}[/yellow]")
 
-    registry = Registry.load(Path.cwd())
-    table.add_row("recipes", f"[green]{len(registry.recipes)}[/green]")
+    warnings: list[str] = []
+    try:
+        registry = Registry.load(manifest)
+        table.add_row("recipes", f"[green]{len(registry.recipes)}[/green]")
+        warnings = registry.warnings
+    except RecipeError as exc:
+        table.add_row("recipes", f"[red]{exc}[/red]")
 
     console.print(table)
-    _show_warnings(registry.warnings)
+    _show_warnings(warnings)
 
 
 @app.command()
@@ -318,9 +395,7 @@ def set_language(code: str = typer.Argument(..., help="en or ru")) -> None:
     options = ", ".join(i18n.available_languages())
     normalised = i18n.normalise(code)
     if not normalised:
-        errors.print(
-            f"[red]{t('cli.bad_language', code=code, options=options)}[/red]"
-        )
+        errors.print(f"[red]{t('cli.bad_language', code=code, options=options)}[/red]")
         raise typer.Exit(EXIT_USAGE)
 
     settings = config_mod.Config.load()

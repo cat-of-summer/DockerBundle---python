@@ -123,7 +123,7 @@ def classify(spec: ServiceSpec, recipe: Recipe | None = None) -> list[MountSpec]
 
 
 def apply_overrides(spec: ServiceSpec, overrides: dict[str, str]) -> list[str]:
-    """Apply the user's per-mount decisions from ``bundle.yml``.
+    """Apply the user's per-mount decisions from ``docker-bundle.yml``.
 
     Returns warnings for overrides that cannot be honoured — baking a socket, or naming
     a mount target the service does not have.

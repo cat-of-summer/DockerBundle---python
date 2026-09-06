@@ -63,7 +63,7 @@ def allocate(
 ) -> Allocation:
     """Assign a unique container port to every port of every service.
 
-    ``pinned`` maps ``slug -> {original: assigned}`` from ``bundle.yml``; pinned ports are
+    ``pinned`` maps ``slug -> {original: assigned}`` from ``docker-bundle.yml``; pinned ports are
     honoured first so that a committed manifest keeps producing the same image.
     """
     pinned = pinned or {}
@@ -107,7 +107,7 @@ def allocate(
             if not _can_move(recipe):
                 result.errors.append(
                     f"{spec.slug}: port {want.original} is already used by {holder}, and its "
-                    f"recipe cannot relocate it. Pin a free port in bundle.yml "
+                    f"recipe cannot relocate it. Pin a free port in docker-bundle.yml "
                     f"(services.{spec.slug}.ports) or drop one of the two services."
                 )
                 assigned_ports.append(want)

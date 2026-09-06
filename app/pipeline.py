@@ -20,47 +20,53 @@ from render import writer
 
 @dataclass
 class Context:
-    """Everything discovered and resolved for a manifest, before planning."""
+    """Everything discovered and resolved for a configuration, before planning."""
 
     manifest: Manifest
     registry: Registry
     discovery: resolve.Discovery
+    features: dict[str, bool] = field(default_factory=dict)
     selected: list[ServiceSpec] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
 
-def load(manifest: Manifest, *, pull: bool = False) -> Context:
-    """Discover candidates for a manifest and work out which ones it selects."""
+def load(
+    manifest: Manifest, *, pull: bool = False, features: dict[str, bool] | None = None
+) -> Context:
+    """Discover candidates for a configuration and work out which ones it selects.
+
+    Every service a source provides is a candidate. What happens to each of them is one
+    decision, ``mode:``, applied later by the planner — so ``services:`` stays a table of
+    decisions rather than a second copy of the compose files, and adding an entry to
+    force one service's recipe no longer quietly excludes all the others.
+    """
     root = manifest.path.parent if manifest.path else Path.cwd()
-    registry = Registry.load(root)
-    discovery = resolve.collect(manifest.sources, root, pull=pull)
+    active = dict(features if features is not None else manifest.features)
+
+    registry = Registry.load(manifest)
+    discovery = resolve.collect(manifest.active_sources(active), root, pull=pull)
 
     warnings = [*registry.warnings, *discovery.warnings]
     warnings.extend(resolve.enrich(discovery.services, pull=pull))
 
-    # An empty services table means "everything found", which is what a fresh `init`
-    # produces; once the wizard has run, the manifest lists exactly what to include.
-    if manifest.services:
-        wanted = {slug for slug, entry in manifest.services.items() if entry.enabled}
-        selected = [spec for spec in discovery.services if spec.slug in wanted]
-        missing = wanted - {spec.slug for spec in selected}
-        warnings.extend(
-            f"{slug}: listed in bundle.yml but no source provides it" for slug in sorted(missing)
-        )
-    else:
-        selected = list(discovery.services)
+    known = {spec.slug for spec in discovery.services}
+    warnings.extend(
+        f"{slug}: named in services: but no source provides it"
+        for slug in sorted(set(manifest.services) - known)
+    )
 
     return Context(
         manifest=manifest,
         registry=registry,
         discovery=discovery,
-        selected=selected,
+        features=active,
+        selected=list(discovery.services),
         warnings=warnings,
     )
 
 
 def ensure_entries(context: Context) -> None:
-    """Add a manifest entry for every selected service that lacks one."""
+    """Add a configuration entry for every selected service that lacks one."""
     for spec in context.selected:
         context.manifest.services.setdefault(
             spec.slug,
@@ -72,10 +78,19 @@ def generate(
     context: Context, *, variant: str = "cpu", image_ref: str = "", output: Path | None = None
 ) -> writer.Written:
     """Plan and render. Raises :class:`PlanError` when something blocks generation."""
-    plan = builder.build(context.selected, context.manifest, context.registry, variant=variant)
+    if context.discovery.errors:
+        raise PlanError(list(context.discovery.errors))
+
+    plan = builder.build(
+        context.selected,
+        context.manifest,
+        context.registry,
+        variant=variant,
+        features=context.features,
+    )
     plan.warnings = [*context.warnings, *plan.warnings]
     destination = output or context.manifest.output_dir()
-    # `--image` wins, then the manifest. Without the manifest fallback the published
+    # `--image` wins, then the configuration. Without that fallback the published
     # reference would live only in a flag, and any plain `generate` would quietly put
     # `<name>:latest` back into the compose file shipped to users.
     return writer.render(
@@ -83,7 +98,7 @@ def generate(
         destination,
         variant=variant,
         image_ref=image_ref or context.manifest.image,
-        labels=context.manifest.labels,
+        labels=context.manifest.active_labels(context.features),
     )
 
 
@@ -107,7 +122,7 @@ def conflicts(context: Context) -> list:
     merged = envmerge.merge(
         context.selected,
         globals_=context.manifest.globals,
-        decisions=context.manifest.env_conflicts,
+        rules=context.manifest.active_env(context.features),
         prefixes=prefixes,
     )
     return merged.conflicts

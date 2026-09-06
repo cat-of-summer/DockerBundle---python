@@ -13,11 +13,12 @@ from pathlib import Path
 
 APP_NAME = "dockerbundle"
 
-#: Name of the per-project manifest, resolved relative to the current directory.
-MANIFEST_NAME = "bundle.yml"
+#: Name of the per-project configuration, resolved relative to the current directory.
+#: One file: sources, service selection, recipes and environment decisions.
+MANIFEST_NAME = "docker-bundle.yml"
 
-#: Directory a project may place its own recipe overrides in.
-PROJECT_RECIPES_DIRNAME = "recipes"
+#: Name of the lock file written beside the generated output.
+LOCK_NAME = "docker-bundle.lock.yml"
 
 #: Default output directory, relative to the project root.
 DEFAULT_OUTPUT_DIRNAME = "dist"

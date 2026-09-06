@@ -68,7 +68,7 @@ def _print_location() -> None:
 
 
 def _change_directory(raw: str) -> None:
-    from app.cli import console, errors
+    from app.cli import errors
 
     target = _unquote(raw.strip())
     if not target:

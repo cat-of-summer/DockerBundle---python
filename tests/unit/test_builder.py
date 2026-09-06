@@ -33,7 +33,7 @@ ALL = {
     "vue_nginx_vite_vue",
     "vue_nginx_vite_nginx",
 }
-RESOLVED = {"env_conflicts": {"EXTERNAL_ACCESS": "prefix", "VITE_API_BASE_URL": "value:/api"}}
+RESOLVED = {"env": {"EXTERNAL_ACCESS": "prefix", "VITE_API_BASE_URL": "value:/api"}}
 
 
 def test_unresolved_conflicts_block_generation(catalog, registry):

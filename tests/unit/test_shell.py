@@ -106,7 +106,7 @@ def test_commands_run_in_the_directory_cd_moved_to(monkeypatch, tmp_path):
 
     script(monkeypatch, f"cd {target}", "init --name shop", "exit")
     shell.run()
-    assert (target / "bundle.yml").is_file()
+    assert (target / "docker-bundle.yml").is_file()
 
 
 def test_pwd_prints_the_working_directory(monkeypatch, tmp_path, capsys):

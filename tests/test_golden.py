@@ -39,7 +39,7 @@ def generated(catalog, registry, tmp_path) -> Path:
 
     manifest = Manifest(
         name="shop",
-        env_conflicts={"EXTERNAL_ACCESS": "prefix", "VITE_API_BASE_URL": "value:/api"},
+        env={"EXTERNAL_ACCESS": "prefix", "VITE_API_BASE_URL": "value:/api"},
         services={spec.slug: ServiceEntry(slug=spec.slug) for spec in specs},
     )
     plan = builder.build(specs, manifest, registry)
@@ -58,7 +58,7 @@ COMPARED = (
     "healthcheck.sh",
     "docker-compose.yml",
     ".env.example",
-    "bundle.lock.yml",
+    "docker-bundle.lock.yml",
 )
 
 
@@ -88,7 +88,7 @@ def test_generation_is_deterministic(catalog, registry, tmp_path):
         specs = [spec for spec in discovery.services if spec.slug in SLUGS]
         manifest = Manifest(
             name="shop",
-            env_conflicts={"EXTERNAL_ACCESS": "prefix", "VITE_API_BASE_URL": "value:/api"},
+            env={"EXTERNAL_ACCESS": "prefix", "VITE_API_BASE_URL": "value:/api"},
             services={spec.slug: ServiceEntry(slug=spec.slug) for spec in specs},
         )
         plan = builder.build(specs, manifest, registry)

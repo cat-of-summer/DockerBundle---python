@@ -2,42 +2,58 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from core.model import ServiceSpec
-from core.paths import PROJECT_RECIPES_DIRNAME, resource_dir
+from core.paths import resource_dir
 from recipes import fallback
-from recipes.schema import Recipe, load_dir
+from recipes.schema import RawRecipe, Recipe, RecipeError, build_table, read_inline, read_path
+
+if TYPE_CHECKING:  # pragma: no cover - import only for the annotation
+    from core.manifest import Manifest
 
 
 @dataclass
 class Registry:
-    """Built-in recipes, overlaid with any the project defines.
+    """Every recipe available to one generation, in layers.
 
-    A project-local ``recipes/foo.yml`` replaces the built-in of the same name outright,
-    so a user can retune a runtime without vendoring the whole set.
+    Three of them, lowest first: the built-in set, whatever ``recipe_paths:`` names, and
+    the ``recipes:`` written inline in ``docker-bundle.yml``. A later layer either
+    replaces a name outright or, with ``extends:``, builds on what the layer below said —
+    so tuning one detail of a built-in runtime no longer means vendoring the whole recipe
+    and inheriting its future bugs.
     """
 
-    recipes: dict[str, Recipe]
-    warnings: list[str]
+    recipes: dict[str, Recipe] = field(default_factory=dict)
+    warnings: list[str] = field(default_factory=list)
 
     @classmethod
-    def load(cls, project_dir: Path | None = None) -> Registry:
+    def load(cls, manifest: Manifest | None = None) -> Registry:
         warnings: list[str] = []
-        table: dict[str, Recipe] = {}
 
-        builtin, builtin_warnings = load_dir(resource_dir("recipes/builtin"))
+        builtin, builtin_warnings = read_path(resource_dir("recipes/builtin"))
         warnings.extend(builtin_warnings)
-        for recipe in builtin:
-            table[recipe.name] = recipe
+        layers: list[list[RawRecipe]] = [builtin]
 
-        if project_dir is not None:
-            local, local_warnings = load_dir(project_dir / PROJECT_RECIPES_DIRNAME)
-            warnings.extend(local_warnings)
-            for recipe in local:
-                table[recipe.name] = recipe
+        if manifest is not None:
+            external: list[RawRecipe] = []
+            for entry in manifest.recipe_paths:
+                found, path_warnings = read_path(manifest.resolve(entry))
+                external.extend(found)
+                warnings.extend(path_warnings)
+            if external:
+                layers.append(external)
 
+            if manifest.recipes:
+                origin = manifest.path.name if manifest.path else "docker-bundle.yml"
+                inline, inline_warnings = read_inline(manifest.recipes, origin)
+                warnings.extend(inline_warnings)
+                layers.append(inline)
+
+        table, table_warnings = build_table(layers)
+        warnings.extend(table_warnings)
         return cls(recipes=table, warnings=warnings)
 
     def get(self, name: str) -> Recipe | None:
@@ -49,6 +65,8 @@ class Registry:
         service = spec.name
         files = _files_in(spec.source_dir)
         command = " ".join([*(spec.entrypoint or []), *(spec.command or [])])
+        path = spec.source_dir.as_posix() if spec.source_dir is not None else ""
+        env = set(spec.environment) | {entry.key for entry in spec.env_vars}
 
         best: Recipe | None = None
         best_score = 0
@@ -59,6 +77,8 @@ class Registry:
                 command=command,
                 service=service,
                 package=spec.package,
+                path=path,
+                env=env,
             )
             if score == 0:
                 continue
@@ -94,3 +114,6 @@ def _files_in(directory: Path | None) -> set[str]:
         return {entry.name for entry in directory.iterdir()}
     except OSError:
         return set()
+
+
+__all__ = ["Registry", "RecipeError"]

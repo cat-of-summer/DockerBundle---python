@@ -1,7 +1,7 @@
 """Global, cross-project user state: ``~/.dockerbundle/config.json``.
 
 Deliberately tiny. Anything that affects generated output belongs in the per-project
-``bundle.yml`` so it can be committed and reproduced in CI; only preferences live here.
+``docker-bundle.yml`` so it can be committed and reproduced in CI; only preferences live here.
 """
 
 from __future__ import annotations

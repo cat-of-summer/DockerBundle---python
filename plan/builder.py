@@ -1,4 +1,4 @@
-"""Assemble a :class:`~core.model.BundlePlan` from services, recipes and the manifest.
+"""Assemble a :class:`~core.model.BundlePlan` from services, recipes and the configuration.
 
 This is the heart of the tool and deliberately a pure function: no filesystem writes, no
 Docker calls, no prompting. Everything it needs arrives as arguments and everything it
@@ -20,6 +20,7 @@ from core.model import (
     Origin,
     PlannedService,
     ReadinessProbe,
+    ServiceMode,
     ServiceSpec,
     SupervisorProgram,
     env_prefix,
@@ -53,10 +54,14 @@ class Resolved:
     spec: ServiceSpec
     recipe: Recipe
     is_fallback: bool
-    bakeable: bool
+    mode: ServiceMode
     replicas: int = 1
     prefix: str = ""
     ports: list = field(default_factory=list)
+
+    @property
+    def bakeable(self) -> bool:
+        return self.mode is ServiceMode.BAKE
 
 
 def compute_prefixes(specs: list[ServiceSpec], overrides: dict[str, str]) -> dict[str, str]:
@@ -83,7 +88,11 @@ def compute_prefixes(specs: list[ServiceSpec], overrides: dict[str, str]) -> dic
 
 
 def _resolve_recipes(
-    specs: list[ServiceSpec], manifest: Manifest, registry: Registry, problems: list[str]
+    specs: list[ServiceSpec],
+    manifest: Manifest,
+    registry: Registry,
+    features: dict[str, bool],
+    problems: list[str],
 ) -> list[Resolved]:
     resolved: list[Resolved] = []
     for spec in specs:
@@ -93,47 +102,45 @@ def _resolve_recipes(
             recipe, is_fallback = registry.resolve(spec, forced=forced)
         except KeyError:
             problems.append(
-                f"{spec.slug}: bundle.yml asks for recipe {forced!r}, which does not exist"
+                f"{spec.slug}: docker-bundle.yml asks for recipe {forced!r}, "
+                f"which does not exist"
             )
             continue
 
-        bakeable = recipe.bakeable
-        if entry is not None and entry.bakeable is not None:
-            bakeable = entry.bakeable
+        # A recipe that cannot be a process inside the bundle asks for a sidecar; the
+        # configuration has the last word either way.
+        default = ServiceMode.BAKE if recipe.bakeable else ServiceMode.SIDECAR
+        mode = manifest.service_mode(spec.slug, features, default=default)
+        if mode is ServiceMode.OFF:
+            continue
 
         resolved.append(
             Resolved(
                 spec=spec,
                 recipe=recipe,
                 is_fallback=is_fallback,
-                bakeable=bakeable,
+                mode=mode,
                 replicas=entry.replicas if entry else 1,
             )
         )
     return resolved
 
 
-def _copies_for(item: Resolved, port: int | None) -> tuple[list[CopyOp], dict[str, str]]:
+def _copies_for(
+    item: Resolved, port: int | None, features: dict[str, bool]
+) -> tuple[list[CopyOp], dict[str, str]]:
     """Build the COPY operations for one service, from its recipe and its mounts.
 
     Also returns a map of original mount target -> where it ended up in the image, used
     to relocate paths that were meaningful in the source layout.
     """
     spec, recipe = item.spec, item.recipe
-    values = {
-        "slug": spec.slug,
-        "port": port,
-        "name": spec.name,
-        "prefix": item.prefix,
-        # Lets a recipe lift files out of the very image the service runs, without
-        # pinning the version a second time inside the recipe.
-        "image": spec.effective_image,
-    }
+    values = _values(item, port)
     copies: list[CopyOp] = []
     consumed: set[str] = set()
     relocated: dict[str, str] = {}
 
-    for rule in recipe.copy:
+    for rule in recipe.copies_for(features):
         dest = substitute(rule.dest, values)
 
         # Straight out of another image: nothing to stage locally, and nothing we could
@@ -208,22 +215,33 @@ def _copies_for(item: Resolved, port: int | None) -> tuple[list[CopyOp], dict[st
     return copies, relocated
 
 
-def _programs_for(
-    item: Resolved, port: int | None, extra_env: dict[str, str], warnings: list[str]
-) -> list[SupervisorProgram]:
-    spec, recipe = item.spec, item.recipe
-    values = {
+def _values(item: Resolved, port: int | None) -> dict[str, object]:
+    """The placeholders a recipe's strings may use for this service."""
+    spec = item.spec
+    return {
         "slug": spec.slug,
         "port": port,
         "name": spec.name,
+        "package": spec.package,
         "prefix": item.prefix,
         # Lets a recipe lift files out of the very image the service runs, without
         # pinning the version a second time inside the recipe.
         "image": spec.effective_image,
     }
 
+
+def _programs_for(
+    item: Resolved,
+    port: int | None,
+    extra_env: dict[str, str],
+    features: dict[str, bool],
+    warnings: list[str],
+) -> list[SupervisorProgram]:
+    spec, recipe = item.spec, item.recipe
+    values = _values(item, port)
+
     programs: list[SupervisorProgram] = []
-    for rule in recipe.programs:
+    for rule in recipe.programs_for(features):
         name = substitute(rule.name or spec.slug, values)
         environment = {
             key: substitute(value, values) for key, value in rule.environment.items()
@@ -258,18 +276,53 @@ def _programs_for(
     return programs
 
 
+def _warn_shared_runtime(baked: list[Resolved], warnings: list[str]) -> None:
+    """Point out services that share a runtime but asked for different versions of it.
+
+    A shared runtime is installed once, from the base image's packages — the bundle gets
+    Debian's PHP whatever tag the source compose named. Two services built against
+    ``php:7.4-fpm-alpine`` and ``php:8.3-fpm-alpine`` therefore both end up on whichever
+    version the base ships, and nothing about the build fails to say so. It is a warning
+    and not an error because the version was never taken from those images in the first
+    place; what is worth knowing is that one of the two is no longer running what it was
+    written against.
+    """
+    groups: dict[str, dict[str, list[str]]] = {}
+    for item in baked:
+        if not item.recipe.shared:
+            continue
+        image = item.spec.effective_image
+        if not image:
+            continue
+        groups.setdefault(item.recipe.shared, {}).setdefault(image, []).append(item.spec.slug)
+
+    for runtime, by_image in sorted(groups.items()):
+        if len(by_image) < 2:
+            continue
+        described = "; ".join(
+            f"{image} ({', '.join(sorted(slugs))})" for image, slugs in sorted(by_image.items())
+        )
+        warnings.append(
+            f"{runtime}: one runtime is installed for the whole image, but these services "
+            f"were built against different ones — {described}. They will all run the "
+            f"version the base image provides."
+        )
+
+
 def build(
     specs: list[ServiceSpec],
     manifest: Manifest,
     registry: Registry,
     *,
     variant: str = "cpu",
+    features: dict[str, bool] | None = None,
 ) -> BundlePlan:
     """Produce the plan, or raise :class:`PlanError` listing everything that blocks it."""
     problems: list[str] = []
     warnings: list[str] = []
+    features = dict(features if features is not None else manifest.features)
 
-    resolved = _resolve_recipes(specs, manifest, registry, problems)
+    resolved = _resolve_recipes(specs, manifest, registry, features, problems)
     if problems:
         raise PlanError(problems)
 
@@ -282,38 +335,48 @@ def build(
 
     family = "debian" if manifest.base.get(variant, "").find("alpine") < 0 else "alpine"
 
+    # A service kept outside the bundle contributes nothing to the image, and everything
+    # to the deployment's `.env`: that is the whole point of saying `mode: external`
+    # instead of switching it off.
+    external = [item for item in resolved if item.mode is ServiceMode.EXTERNAL]
+    inside = [item for item in resolved if item.mode is not ServiceMode.EXTERNAL]
+
     # -- mounts ---------------------------------------------------------
-    for item in resolved:
+    for item in inside:
         mounts.classify(item.spec, item.recipe)
         entry = manifest.services.get(item.spec.slug)
         if entry and entry.mounts:
             warnings.extend(mounts.apply_overrides(item.spec, entry.mounts))
 
     # -- ports ----------------------------------------------------------
-    baked = [item for item in resolved if item.bakeable]
+    baked = [item for item in inside if item.bakeable]
+    _warn_shared_runtime(baked, warnings)
 
     allocation = ports.allocate(
         [(item.spec, item.recipe) for item in baked],
-        pinned={
-            slug: entry.ports for slug, entry in manifest.services.items() if entry.ports
-        },
+        pinned={slug: entry.ports for slug, entry in manifest.services.items() if entry.ports},
         port_range=manifest.port_range,
     )
     warnings.extend(allocation.warnings)
     problems.extend(allocation.errors)
 
     # -- environment ----------------------------------------------------
+    assigned_ports = {
+        slug: entries[0].container for slug, entries in allocation.ports.items() if entries
+    }
     merged = envmerge.merge(
         [item.spec for item in resolved],
         globals_=manifest.globals,
-        decisions=manifest.env_conflicts,
+        rules=manifest.active_env(features),
         prefixes=prefixes,
+        ports=assigned_ports,
     )
     warnings.extend(merged.warnings)
+    problems.extend(merged.errors)
     if merged.conflicts:
         problems.append(
             "unresolved environment conflicts — run `dockerbundle wizard`, or add "
-            "decisions under env_conflicts in bundle.yml:\n  "
+            "decisions under env: in docker-bundle.yml:\n  "
             + "\n  ".join(conflict.summary() for conflict in merged.conflicts)
         )
 
@@ -327,6 +390,8 @@ def build(
         network_external=manifest.network_external,
         base_images=dict(manifest.base),
         family=family,
+        features=features,
+        external=[item.spec for item in external],
         env=merged.entries,
         env_renames=merged.renames,
     )
@@ -336,19 +401,11 @@ def build(
     shared_seen: set[str] = set()
     image_stages: dict[str, str] = {}
 
-    for item in resolved:
+    for item in inside:
         spec, recipe = item.spec, item.recipe
         assigned = allocation.for_service(spec.slug)
         port = assigned[0].container if assigned else None
-        values = {
-        "slug": spec.slug,
-        "port": port,
-        "name": spec.name,
-        "prefix": item.prefix,
-        # Lets a recipe lift files out of the very image the service runs, without
-        # pinning the version a second time inside the recipe.
-        "image": spec.effective_image,
-    }
+        values = _values(item, port)
 
         planned = PlannedService(
             spec=spec,
@@ -372,10 +429,8 @@ def build(
             )
             continue
 
-        planned.copies, relocated = _copies_for(item, port)
-        planned.volumes = [
-            mount for mount in spec.mounts if mount.mode is MountMode.VOLUME
-        ]
+        planned.copies, relocated = _copies_for(item, port, features)
+        planned.volumes = [mount for mount in spec.mounts if mount.mode is MountMode.VOLUME]
 
         working_dir = spec.working_dir or ""
         planned.init_cwd = relocated.get(working_dir, working_dir)
@@ -394,13 +449,13 @@ def build(
         if recipe.shared:
             if recipe.shared not in shared_seen:
                 shared_seen.add(recipe.shared)
-                planned.programs = _programs_for(item, port, {}, warnings)
+                planned.programs = _programs_for(item, port, {}, features, warnings)
             else:
                 planned.programs = []
         else:
-            planned.programs = _programs_for(item, port, extra_env, warnings)
+            planned.programs = _programs_for(item, port, extra_env, features, warnings)
 
-        for rule in recipe.readiness:
+        for rule in recipe.readiness_for(features):
             planned.readiness.append(
                 ReadinessProbe(
                     kind=rule.type,
@@ -410,9 +465,15 @@ def build(
                 )
             )
 
-        planned.build_steps = [substitute(command, values) for command in recipe.post_copy]
-        planned.pre_init = [substitute(command, values) for command in recipe.pre_init]
-        planned.post_init = [substitute(command, values) for command in recipe.post_init]
+        planned.build_steps = [
+            substitute(command, values) for command in recipe.post_copy_for(features)
+        ]
+        planned.pre_init = [
+            substitute(command, values) for command in recipe.pre_init_for(features)
+        ]
+        planned.post_init = [
+            substitute(command, values) for command in recipe.post_init_for(features)
+        ]
 
         if item.is_fallback and spec.effective_image:
             stage = fallback.stage_name(spec.slug)
@@ -436,9 +497,9 @@ def build(
             for package in packages:
                 if package not in bucket:
                     bucket.append(package)
-        for fam, commands in recipe.run.items():
+        for fam in recipe.run:
             bucket = run_steps.setdefault(fam, [])
-            for command in commands:
+            for command in recipe.runs_for(fam, features):
                 rendered = substitute(command, values)
                 if rendered not in bucket:
                     bucket.append(rendered)
@@ -465,6 +526,14 @@ def build(
 
     if problems:
         raise PlanError(problems)
+
+    if not plan.baked and not plan.sidecars:
+        raise PlanError(
+            [
+                "nothing is left to build: every service is either mode: off or held "
+                "back by a when: that does not hold with these features"
+            ]
+        )
 
     # -- ordering -------------------------------------------------------
     edges: dict[str, list[str]] = {}
@@ -506,14 +575,25 @@ def build(
         for mount in planned.volumes:
             plan.named_volumes[_volume_name(planned.spec.slug, mount)] = mount.target
     # Declared by hand for state that has no mount of its own to classify.
-    plan.named_volumes.update(manifest.volumes)
+    for name, target in manifest.active_volumes(features).items():
+        existing = plan.named_volumes.get(name)
+        if existing is not None and existing != target:
+            problems.append(
+                f"volumes.{name}: already mounted at {existing} by a service; one volume "
+                f"cannot also be {target}. Rename it."
+            )
+            continue
+        plan.named_volumes[name] = target
+
+    if problems:
+        raise PlanError(problems)
 
     plan.install = install
     plan.run_steps = run_steps
     plan.port_map = dict(allocation.ports)
     plan.warnings = warnings
 
-    for item in resolved:
+    for item in inside:
         if item.is_fallback:
             warnings.append(
                 f"{item.spec.slug}: no recipe matched "
@@ -525,6 +605,12 @@ def build(
     for planned in plan.sidecars:
         if planned.spec.origin is Origin.IMAGE:
             warnings.append(f"{planned.spec.slug}: kept as a separate compose service")
+
+    for spec in plan.external:
+        warnings.append(
+            f"{spec.slug}: left outside the bundle; its keys stay in .env.example so the "
+            f"deployment can point at wherever it actually runs"
+        )
 
     return plan
 

@@ -37,7 +37,7 @@ def test_version():
 def test_init_creates_a_manifest(tmp_path, catalog):
     result = runner.invoke(app, ["init", "--source", str(catalog), "--name", "shop"])
     assert result.exit_code == 0, result.output
-    assert (tmp_path / "bundle.yml").is_file()
+    assert (tmp_path / "docker-bundle.yml").is_file()
 
 
 def test_init_refuses_to_overwrite_without_force(catalog):
@@ -65,9 +65,9 @@ def test_generate_succeeds_once_conflicts_are_resolved(tmp_path, catalog):
     import yaml
 
     runner.invoke(app, ["init", "--source", str(catalog), "--name", "shop"])
-    manifest = tmp_path / "bundle.yml"
+    manifest = tmp_path / "docker-bundle.yml"
     data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
-    data["env_conflicts"] = {"EXTERNAL_ACCESS": "prefix", "VITE_API_BASE_URL": "value:/api"}
+    data["env"] = {"EXTERNAL_ACCESS": "prefix", "VITE_API_BASE_URL": "value:/api"}
     manifest.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
 
     result = runner.invoke(app, ["generate", "--yes"])

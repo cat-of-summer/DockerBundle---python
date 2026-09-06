@@ -57,6 +57,22 @@ class Origin(str, Enum):
     IMAGE = "image"  # a bare image reference typed by the user
 
 
+class ServiceMode(str, Enum):
+    """What becomes of a discovered service.
+
+    One axis instead of the two it used to take. ``enabled`` and ``bakeable`` were
+    independent flags describing the same decision, which made "outside the image but
+    still configurable" impossible to state: turning a service off took its environment
+    keys with it, and the deployment lost the ``DB_HOST`` it needed to reach the database
+    that was living elsewhere on purpose.
+    """
+
+    BAKE = "bake"  # a process inside the bundle image
+    SIDECAR = "sidecar"  # its own service in the generated compose file
+    EXTERNAL = "external"  # rendered nowhere, but its .env keys survive
+    OFF = "off"  # dropped, keys and all
+
+
 class MountKind(str, Enum):
     """What a bind mount actually carries.
 
@@ -371,6 +387,17 @@ class BundlePlan:
     name: str
     baked: list[PlannedService] = field(default_factory=list)
     sidecars: list[PlannedService] = field(default_factory=list)
+    external: list[ServiceSpec] = field(default_factory=list)
+    """Services deliberately left outside the bundle, kept only for their ``.env`` keys.
+
+    A database that already runs elsewhere is not part of the image and not part of the
+    generated compose file, but the deployment still has to be told where to find it.
+    Dropping it outright would take ``DB_HOST`` and friends out of ``.env.example`` too.
+    """
+
+    features: dict[str, bool] = field(default_factory=dict)
+    """Feature flags this plan was built with, as resolved from the file and the flags."""
+
     env: list[EnvVar] = field(default_factory=list)
     named_volumes: dict[str, str] = field(default_factory=dict)
     """Volume name -> mount target inside the bundle container."""
