@@ -87,6 +87,20 @@ RUN chmod +x /usr/local/bin/bundle-entrypoint.sh /usr/local/bin/bundle-healthche
 EXPOSE {{ port }}
 {% endfor %}
 
+# What this image was built from, and what it needs to start. Nothing else records it:
+# .env and docker-compose.yml are regenerated from docker-bundle.yml whenever it changes,
+# and an image built before that change still expects the environment names it was baked
+# with. Without these labels that mismatch surfaces as a restart loop and one expansion
+# error. Compare them against docker-bundle.lock.yml:
+#
+#   docker inspect --format '{{ '{{' }} json .Config.Labels {{ '}}' }}' {{ image_ref }}
+LABEL dev.dockerbundle.version="{{ version }}" \
+      dev.dockerbundle.format="{{ format_version }}" \
+      dev.dockerbundle.bundle="{{ plan.name }}" \
+      dev.dockerbundle.variant="{{ variant }}" \
+      dev.dockerbundle.context-digest="{{ context_digest }}" \
+      dev.dockerbundle.required-env="{{ required_env | join(',') }}"
+
 HEALTHCHECK --interval=30s --timeout=10s --start-period={{ start_period }}s --retries=3 \
     CMD /usr/local/bin/bundle-healthcheck.sh
 

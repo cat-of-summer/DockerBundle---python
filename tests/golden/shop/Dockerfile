@@ -89,6 +89,20 @@ EXPOSE 5173
 EXPOSE 9000
 EXPOSE 20000
 
+# What this image was built from, and what it needs to start. Nothing else records it:
+# .env and docker-compose.yml are regenerated from docker-bundle.yml whenever it changes,
+# and an image built before that change still expects the environment names it was baked
+# with. Without these labels that mismatch surfaces as a restart loop and one expansion
+# error. Compare them against docker-bundle.lock.yml:
+#
+#   docker inspect --format '{{ json .Config.Labels }}' ghcr.io/acme/shop-bundle:test
+LABEL dev.dockerbundle.version="0.2.0" \
+      dev.dockerbundle.format="2" \
+      dev.dockerbundle.bundle="shop" \
+      dev.dockerbundle.variant="cpu" \
+      dev.dockerbundle.context-digest="sha256:ef974b00afcf461e5d5c41de9f5108cdf45555b25fd79073502b93dc0a14f354" \
+      dev.dockerbundle.required-env="LARAVEL_EXTERNAL_ACCESS,LARAVEL_NGINX_NGINX_EXTERNAL_ACCESS,MYSQL_EXTERNAL_ACCESS,VUE_EXTERNAL_ACCESS,VUE_NGINX_VITE_NGINX_EXTERNAL_ACCESS"
+
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
     CMD /usr/local/bin/bundle-healthcheck.sh
 

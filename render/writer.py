@@ -22,7 +22,12 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from core.model import BundlePlan, EnvVar, PlannedService
 from core.paths import LOCK_NAME, resource_dir
 from core.version import GENERATOR_VERSION, __version__
-from discover.interpolate import has_default, rename_variables, strip_defaults
+from discover.interpolate import (
+    has_default,
+    referenced_names,
+    rename_variables,
+    strip_defaults,
+)
 from plan.builder import INIT_BARRIER
 
 _HEADER_TEXT = (
@@ -230,6 +235,31 @@ def _replica_vars(plan: BundlePlan) -> dict[str, int]:
     return {p.replicas_var: 1 for p in plan.programs if p.replicas_var}
 
 
+#: A supervisord reference to an outer environment variable, ``%(ENV_NAME)s``.
+_ENV_REF = re.compile(r"%\(ENV_([A-Za-z_][A-Za-z0-9_]*)\)s")
+
+
+def _required_env(plan: BundlePlan) -> list[str]:
+    """Names the image cannot start without.
+
+    These are the keys a collision renamed: supervisord hands each program the name its
+    application expects by referencing the renamed key, and the init phase exports the
+    same mapping for the service's own entrypoint. Both fail hard when the name is not
+    in the environment, and neither says where it was supposed to come from.
+
+    Replica counts are excluded — the entrypoint gives those a default before supervisord
+    starts, so an absent one is not a missing setting.
+    """
+    names: set[str] = set()
+    for program in plan.programs:
+        for value in program.environment.values():
+            names.update(_ENV_REF.findall(value))
+    for service in plan.baked:
+        for value in service.init_env.values():
+            names.update(referenced_names(value))
+    return sorted(names - {p.replicas_var for p in plan.programs if p.replicas_var})
+
+
 def _readiness_before_init(plan: BundlePlan) -> list:
     """Probes worth waiting on before init scripts run.
 
@@ -341,18 +371,7 @@ def render(
         "cuda": cuda,
         "start_period": DEFAULT_START_PERIOD,
     }
-
-    # Dockerfile
-    _write(
-        output / "Dockerfile",
-        env.get_template("Dockerfile.j2").render(
-            **common,
-            install=plan.install.get(plan.family, []),
-            run_steps=plan.run_steps.get(plan.family, []),
-            exposed_ports=sorted({p.container for s in plan.baked for p in s.ports}),
-        ),
-        written,
-    )
+    required_env = _required_env(plan)
 
     # supervisord
     _write(output / "supervisord.conf",
@@ -365,6 +384,7 @@ def render(
         **common,
         needs_init=plan.needs_init,
         readiness_before_init=_readiness_before_init(plan),
+        required_env=required_env,
     )
     _write(output / "entrypoint.sh", entrypoint, written, executable=True)
     _write(context / "_bundle" / "entrypoint.sh", entrypoint, written, executable=True)
@@ -373,6 +393,24 @@ def render(
     healthcheck = env.get_template("healthcheck.sh.j2").render(**common)
     _write(output / "healthcheck.sh", healthcheck, written, executable=True)
     _write(context / "_bundle" / "healthcheck.sh", healthcheck, written, executable=True)
+
+    # Dockerfile last of the build inputs: its labels carry the digest of the finished
+    # context, and that is only known once every file above has been staged.
+    context_digest = _digest(context)
+    _write(
+        output / "Dockerfile",
+        env.get_template("Dockerfile.j2").render(
+            **common,
+            install=plan.install.get(plan.family, []),
+            run_steps=plan.run_steps.get(plan.family, []),
+            exposed_ports=sorted({p.container for s in plan.baked for p in s.ports}),
+            version=__version__,
+            format_version=GENERATOR_VERSION,
+            context_digest=context_digest,
+            required_env=required_env,
+        ),
+        written,
+    )
 
     # compose
     for service in plan.sidecars:
@@ -411,12 +449,22 @@ def render(
     )
 
     _write(output / ".dockerignore", "context/**/.git\n**/__pycache__\n**/node_modules\n", written)
-    _write(output / LOCK_NAME, _lock(plan, variant, image_ref, context), written)
+    _write(
+        output / LOCK_NAME,
+        _lock(plan, variant, image_ref, context_digest, required_env),
+        written,
+    )
 
     return written
 
 
-def _lock(plan: BundlePlan, variant: str, image_ref: str, context: Path) -> str:
+def _lock(
+    plan: BundlePlan,
+    variant: str,
+    image_ref: str,
+    context_digest: str,
+    required_env: list[str],
+) -> str:
     """A record of what was generated: port map, digests, versions.
 
     Makes a regenerated ``dist/`` diffable and gives operators the port map in one place
@@ -452,7 +500,11 @@ def _lock(plan: BundlePlan, variant: str, image_ref: str, context: Path) -> str:
         "external": sorted(spec.slug for spec in plan.external),
         "volumes": dict(sorted(plan.named_volumes.items())),
         "env_renames": {k: dict(sorted(v.items())) for k, v in sorted(plan.env_renames.items())},
-        "context_digest": _digest(context),
+        # The environment contract of the image built from this dist/. The same list is
+        # stamped on the image as a label, so a deployment can tell whether the .env it
+        # holds was generated for the image it is about to run.
+        "required_env": list(required_env),
+        "context_digest": context_digest,
     }
     return yaml.safe_dump(payload, sort_keys=False, allow_unicode=True, default_flow_style=False)
 

@@ -379,12 +379,33 @@ COPY context/_bundle/healthcheck.sh   /usr/local/bin/bundle-healthcheck.sh
 
 EXPOSE 80 3306 5173 9000 20000
 
+LABEL dev.dockerbundle.version="0.2.0" \
+      dev.dockerbundle.format="2" \
+      dev.dockerbundle.bundle="shop" \
+      dev.dockerbundle.variant="cpu" \
+      dev.dockerbundle.context-digest="sha256:0f446c327b..." \
+      dev.dockerbundle.required-env="EXTERNAL_ACCESS_PHP,EXTERNAL_ACCESS_SITE,DOMAIN_SITE"
+
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
     CMD /usr/local/bin/bundle-healthcheck.sh
 
 # tini reaps the zombies that cron, composer and npm leave behind.
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/bundle-entrypoint.sh"]
 ```
+
+`LABEL` — паспорт образа. `.env` и `docker-compose.yml` развёртывания перегенерируются
+из `docker-bundle.yml` в любой момент, а образ остаётся собранным по прежней схеме имён:
+поменяли правило в `env:` и не пересобрали — и запечённый supervisord продолжает ждать
+переменные, которых в новом `.env` уже нет. Метки дают это проверить одной командой:
+
+```console
+$ docker inspect --format '{{ json .Config.Labels }}' ghcr.io/acme/shop-bundle:latest
+```
+
+`context-digest` совпадает с `context_digest` из `docker-bundle.lock.yml` тогда и только
+тогда, когда образ собран ровно из этого `dist/`. `required-env` перечисляет имена, без
+которых образ не стартует, — их же проверяет [entrypoint](#entrypointsh-три-фазы-старта)
+до запуска supervisord.
 
 ### supervisord.conf
 
@@ -443,6 +464,14 @@ stopsignal=QUIT
 фазы:
 
 ```sh
+# ---- переименованные переменные проверяются до всего остального ---------------
+missing=
+for name in EXTERNAL_ACCESS_PHP EXTERNAL_ACCESS_SITE DOMAIN_SITE; do
+    eval "present=\${$name+yes}"
+    [ -n "$present" ] || missing="$missing $name"
+done
+[ -z "$missing" ] || { log "ERROR: these variables are missing from the environment:$missing"; exit 1; }
+
 # ---- phase 1: data services -------------------------------------------------
 /usr/bin/supervisord -c /etc/supervisord.conf &
 SUPERVISORD_PID=$!
@@ -477,6 +506,13 @@ wait "$SUPERVISORD_PID"
 
 Что здесь происходит:
 
+- **Проверка переменных** идёт до фазы 1. И supervisord (`%(ENV_X)s`), и фаза 2 (`set -u`)
+  падают на отсутствующем имени, сообщая само имя и больше ничего, — а контейнер под
+  `restart: unless-stopped` после этого просто крутится в цикле перезапусков. Обычная
+  причина — `.env`, сгенерированный не из того `docker-bundle.yml`, по которому собран
+  образ; тогда стоит сверить `docker-bundle.lock.yml` с [метками образа](#dockerfile).
+  Проверяются только переименованные ключи: остальные приходят в контейнер под своими
+  именами, а счётчикам реплик энтрипойнт заранее проставляет `1`.
 - **Фаза 1** поднимает только сервисы данных (`priority < 30`) и ждёт их readiness-пробы.
 - **Фаза 2** выполняет собственные `entrypoint.sh` пакетов — **целиком и без правок**,
   ровно как задумал автор пакета. Вокруг каждого выставляются переменные под теми
@@ -602,8 +638,15 @@ volumes:
   uploads: /var/www/laravel_nginx_laravel/storage/app/public
 env_renames:
   laravel_nginx_laravel: {EXTERNAL_ACCESS: EXTERNAL_ACCESS_PHP, TRAEFIK_DOMAIN: DOMAIN_SITE}
+required_env: [DOMAIN_SITE, EXTERNAL_ACCESS_PHP, EXTERNAL_ACCESS_SITE]
 context_digest: sha256:0f446c327b...
 ```
+
+`required_env` и `context_digest` продублированы метками на самом образе
+(`dev.dockerbundle.required-env`, `dev.dockerbundle.context-digest`) — см.
+[Dockerfile](#dockerfile). Сам по себе lock описывает `dist/`; метки говорят, собран ли
+запущенный образ из него, и это единственный способ поймать развёртывание, где `.env`
+перегенерирован, а образ остался прежним.
 
 ---
 

@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
-from core.model import BundlePlan, Origin, PlannedService, PortSpec, ServiceSpec
+from core.model import (
+    BundlePlan,
+    Origin,
+    PlannedService,
+    PortSpec,
+    ServiceSpec,
+    SupervisorProgram,
+)
 from render import writer
-from render.writer import _labels, stage_file
+from render.writer import _labels, _required_env, stage_file
 
 
 def _service(slug, labels=None, ports=(), raw_ports=(), published="", shm_size=""):
@@ -263,3 +270,44 @@ def test_identical_labels_from_two_services_are_not_a_conflict():
     labels, warnings = _labels(plan)
     assert labels == ["traefik.enable=${TRAEFIK_ENABLE}"]
     assert not warnings
+
+
+# ---------------------------------------------------------------------------
+# required environment
+# ---------------------------------------------------------------------------
+
+
+def test_required_env_collects_both_places_a_renamed_key_is_read():
+    # supervisord expands the name for the program; the init phase exports it around the
+    # service's own entrypoint. A key missing from either one stops the container.
+    plan = BundlePlan(name="b")
+    plan.programs = [
+        SupervisorProgram(
+            name="vnu",
+            command="run",
+            environment={"TRAEFIK_DOMAIN": "%(ENV_VNU_TRAEFIK_DOMAIN)s"},
+        )
+    ]
+    laravel = _service("laravel")
+    laravel.init_env = {"EXTERNAL_ACCESS": "${EXTERNAL_ACCESS_PHP}"}
+    plan.baked = [laravel]
+
+    assert _required_env(plan) == ["EXTERNAL_ACCESS_PHP", "VNU_TRAEFIK_DOMAIN"]
+
+
+def test_required_env_leaves_out_replica_counts():
+    # The entrypoint defaults those to 1 before supervisord starts, so an absent one is
+    # not a missing setting and must not fail the pre-flight check.
+    plan = BundlePlan(name="b")
+    plan.programs = [
+        SupervisorProgram(name="php-fpm", command="run", replicas_var="LARAVEL_REPLICAS")
+    ]
+    assert _required_env(plan) == []
+
+
+def test_required_env_is_empty_without_renames():
+    # Nothing collided, so every process reads the name its package was written against.
+    plan = BundlePlan(name="b")
+    plan.programs = [SupervisorProgram(name="nginx", command="run")]
+    plan.baked = [_service("nginx")]
+    assert _required_env(plan) == []
