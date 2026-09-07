@@ -25,7 +25,7 @@ param(
 
     [string]$Repo = $(if ($env:DOCKERBUNDLE_REPO) { $env:DOCKERBUNDLE_REPO } else { 'cat-of-summer/DockerBundle---python' }),
 
-    [switch]$NoVerify
+    [string]$Sha256 = $env:DOCKERBUNDLE_SHA256
 )
 
 $ErrorActionPreference = 'Stop'
@@ -36,7 +36,7 @@ function Write-Warn { param([string]$Message) Write-Warning "dockerbundle: $Mess
 
 if (-not $Version) {
     Write-Host @'
-usage: install.ps1 <version> [-Dir DIR] [-NoVerify] [-Repo OWNER/NAME]
+usage: install.ps1 <version> [-Dir DIR] [-Sha256 HEX] [-Repo OWNER/NAME]
 
   <version>   release tag to install, e.g. v1.2.3
 
@@ -89,26 +89,20 @@ try {
 
     Write-Info "downloaded $asset from $Version"
 
-    if (-not $NoVerify) {
-        $sumFile = Join-Path $temp 'binary.sha256'
-        $haveSum = $true
-        try {
-            Invoke-WebRequest -Uri "$baseUrl/$Version/$asset.sha256" -OutFile $sumFile -UseBasicParsing
-        } catch {
-            $haveSum = $false
-            Write-Warn "release $Version publishes no $asset.sha256; installing unverified"
+    # Only against a digest the caller supplied. A checksum file served from the same
+    # host as the binary proves nothing an attacker could not also forge, and HTTPS
+    # already covers the transport. A digest pinned in CI is a different thing - it says
+    # "these exact bytes". GitHub prints one beside every asset.
+    if ($Sha256) {
+        # Accept the "sha256:..." form GitHub displays as well as a bare digest.
+        $expected = $Sha256 -replace '^sha256:', ''
+        $actual = (Get-FileHash -Path $binary -Algorithm SHA256).Hash
+        if ($actual -ine $expected) {
+            Write-Warn "expected $expected"
+            Write-Warn "got      $actual"
+            throw "dockerbundle: checksum mismatch for $asset - refusing to install"
         }
-
-        if ($haveSum) {
-            $expected = ((Get-Content $sumFile -Raw) -split '\s+')[0].Trim()
-            $actual = (Get-FileHash -Path $binary -Algorithm SHA256).Hash
-            if ($actual -ine $expected) {
-                Write-Warn "expected $expected"
-                Write-Warn "got      $actual"
-                throw "dockerbundle: checksum mismatch for $asset - refusing to install"
-            }
-            Write-Info 'checksum ok'
-        }
+        Write-Info 'checksum ok'
     }
 
     if (-not $Dir) {

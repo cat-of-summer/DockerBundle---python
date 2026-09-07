@@ -36,16 +36,6 @@ fi
 "$python" -m PyInstaller --clean --noconfirm \
     --distpath dist --workpath "$scratch" build/dockerbundle.spec
 
-# A checksum beside each artifact, so install.sh can tell a truncated download from a
-# good one. The release picks these up through the same RELEASE_FILES glob.
-for artifact in dist/*; do
-    case "$artifact" in
-        *.sha256) continue ;;
-    esac
-    [ -f "$artifact" ] || continue
-    ( cd dist && sha256sum "$(basename "$artifact")" > "$(basename "$artifact").sha256" )
-done
-
 echo
 echo "Artifacts in $root/dist:"
 ls -la dist/

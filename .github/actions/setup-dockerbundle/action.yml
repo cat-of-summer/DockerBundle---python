@@ -13,10 +13,12 @@ inputs:
     description: Where to put the binary. Defaults to a directory under RUNNER_TEMP.
     required: false
     default: ''
-  verify:
-    description: Check the published SHA-256 of the download.
+  sha256:
+    description: >-
+      Refuse to install unless the download hashes to this digest. GitHub prints one
+      beside every release asset. Empty means no check.
     required: false
-    default: 'true'
+    default: ''
   repository:
     description: Repository to fetch the release from.
     required: false
@@ -31,15 +33,15 @@ runs:
       env:
         VERSION: ${{ inputs.version }}
         INSTALL_DIR: ${{ inputs['install-dir'] }}
-        VERIFY: ${{ inputs.verify }}
+        SHA256: ${{ inputs.sha256 }}
         REPO: ${{ inputs.repository }}
       run: |
         set -euo pipefail
-        # Word splitting on $args is deliberate; every part is a separate argument.
-        # shellcheck disable=SC2086
         args="$VERSION --repo $REPO"
         [ -n "$INSTALL_DIR" ] && args="$args --dir $INSTALL_DIR"
-        [ "$VERIFY" = "true" ] || args="$args --no-verify"
+        [ -n "$SHA256" ] && args="$args --sha256 $SHA256"
+        # Word splitting on $args is deliberate; every part is a separate argument.
+        # shellcheck disable=SC2086
         sh "${{ github.action_path }}/../../../install.sh" $args
 
     - name: Install dockerbundle (Windows)
@@ -48,10 +50,10 @@ runs:
       env:
         VERSION: ${{ inputs.version }}
         INSTALL_DIR: ${{ inputs['install-dir'] }}
-        VERIFY: ${{ inputs.verify }}
+        SHA256: ${{ inputs.sha256 }}
         REPO: ${{ inputs.repository }}
       run: |
         $params = @{ Version = $env:VERSION; Repo = $env:REPO }
         if ($env:INSTALL_DIR) { $params.Dir = $env:INSTALL_DIR }
-        if ($env:VERIFY -ne 'true') { $params.NoVerify = $true }
+        if ($env:SHA256) { $params.Sha256 = $env:SHA256 }
         & "${{ github.action_path }}/../../../install.ps1" @params

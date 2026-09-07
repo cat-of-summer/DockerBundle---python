@@ -8,19 +8,19 @@
 # diff of a repository variable, where it can be reviewed, instead of in nobody's hands.
 #
 #   -d, --dir DIR     where to put the binary
-#       --no-verify   skip the SHA-256 check
+#       --sha256 HEX  refuse to install unless the download hashes to HEX
 #       --repo O/N    another repository to fetch from
 #
 # Environment: DOCKERBUNDLE_VERSION, DOCKERBUNDLE_INSTALL_DIR, DOCKERBUNDLE_REPO,
-# DOCKERBUNDLE_BASE_URL (the release download root; exists so the script can be tested
-# against a local server).
+# DOCKERBUNDLE_SHA256, DOCKERBUNDLE_BASE_URL (the release download root; exists so the
+# script can be tested against a local server).
 set -eu
 
 REPO="${DOCKERBUNDLE_REPO:-cat-of-summer/DockerBundle---python}"
 BASE_URL="${DOCKERBUNDLE_BASE_URL:-https://github.com/${REPO}/releases/download}"
 VERSION="${DOCKERBUNDLE_VERSION:-}"
 INSTALL_DIR="${DOCKERBUNDLE_INSTALL_DIR:-}"
-VERIFY=1
+EXPECTED="${DOCKERBUNDLE_SHA256:-}"
 
 say() { printf 'dockerbundle: %s\n' "$1"; }
 warn() { printf 'dockerbundle: %s\n' "$1" >&2; }
@@ -28,13 +28,16 @@ die() { printf 'dockerbundle: %s\n' "$1" >&2; exit 1; }
 
 usage() {
     cat >&2 <<'USAGE'
-usage: install.sh <version> [-d DIR] [--no-verify] [--repo OWNER/NAME]
+usage: install.sh <version> [-d DIR] [--sha256 HEX] [--repo OWNER/NAME]
 
   <version>   release tag to install, e.g. v1.2.3
 
 Pin the tag in your CI configuration so the generator cannot change under you:
 
-  SETUP_COMMAND = curl -fsSL https://raw.githubusercontent.com/cat-of-summer/DockerBundle---python/v1.2.3/install.sh | sh -s -- v1.2.3
+  BUILD_COMMAND = curl -fsSL https://raw.githubusercontent.com/cat-of-summer/DockerBundle---python/v1.2.3/install.sh | sh -s -- v1.2.3 --dir "$RUNNER_TEMP/bin"
+
+To pin the exact bytes as well, pass --sha256 with the digest GitHub prints beside the
+asset on the release page.
 USAGE
     exit 2
 }
@@ -45,7 +48,8 @@ while [ $# -gt 0 ]; do
         --dir=*) INSTALL_DIR="${1#--dir=}"; shift ;;
         --repo) [ $# -ge 2 ] || die "--repo needs OWNER/NAME"; REPO="$2"; shift 2 ;;
         --repo=*) REPO="${1#--repo=}"; shift ;;
-        --no-verify) VERIFY=0; shift ;;
+        --sha256) [ $# -ge 2 ] || die "--sha256 needs a hex digest"; EXPECTED="$2"; shift 2 ;;
+        --sha256=*) EXPECTED="${1#--sha256=}"; shift ;;
         -h|--help) usage ;;
         -*) die "unknown option: $1" ;;
         *) VERSION="$1"; shift ;;
@@ -113,31 +117,31 @@ fi
 say "downloaded ${ASSET} from ${VERSION}"
 
 # ---------------------------------------------------------------- checksum ---
-if [ "$VERIFY" -eq 1 ]; then
-    if fetch "${BASE_URL}/${VERSION}/${ASSET}.sha256" "$TMP/sum" 2>/dev/null; then
-        expected="$(cut -d' ' -f1 <"$TMP/sum" | tr -d '\r\n')"
-        if command -v sha256sum >/dev/null 2>&1; then
-            actual="$(sha256sum "$TMP/binary" | cut -d' ' -f1)"
-        elif command -v shasum >/dev/null 2>&1; then
-            actual="$(shasum -a 256 "$TMP/binary" | cut -d' ' -f1)"
-        elif command -v openssl >/dev/null 2>&1; then
-            actual="$(openssl dgst -sha256 "$TMP/binary" | sed 's/.*= *//')"
-        else
-            actual=""
-            warn "no sha256 tool found; skipping verification"
-        fi
-
-        if [ -n "$actual" ]; then
-            if [ "$actual" != "$expected" ]; then
-                warn "expected $expected"
-                warn "got      $actual"
-                die "checksum mismatch for ${ASSET} — refusing to install"
-            fi
-            say "checksum ok"
-        fi
+# Only against a digest the caller supplied. Shipping a .sha256 beside the binary and
+# checking it here would prove nothing: it comes from the same host over the same
+# connection, so whoever could tamper with one could tamper with the other, and HTTPS
+# already covers the transport. A digest pinned in your CI configuration is a different
+# thing — it says "these exact bytes", and a re-uploaded release then fails loudly.
+# GitHub prints one beside every asset, on the release page and in its API.
+if [ -n "$EXPECTED" ]; then
+    # Accept the "sha256:..." form GitHub displays as well as a bare digest.
+    EXPECTED="${EXPECTED#sha256:}"
+    if command -v sha256sum >/dev/null 2>&1; then
+        actual="$(sha256sum "$TMP/binary" | cut -d' ' -f1)"
+    elif command -v shasum >/dev/null 2>&1; then
+        actual="$(shasum -a 256 "$TMP/binary" | cut -d' ' -f1)"
+    elif command -v openssl >/dev/null 2>&1; then
+        actual="$(openssl dgst -sha256 "$TMP/binary" | sed 's/.*= *//')"
     else
-        warn "release ${VERSION} publishes no ${ASSET}.sha256; installing unverified"
+        die "--sha256 was given but no sha256 tool is available to check it"
     fi
+
+    if [ "$actual" != "$EXPECTED" ]; then
+        warn "expected $EXPECTED"
+        warn "got      $actual"
+        die "checksum mismatch for ${ASSET} — refusing to install"
+    fi
+    say "checksum ok"
 fi
 
 # ---------------------------------------------------------------- install ----
