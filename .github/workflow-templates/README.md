@@ -28,8 +28,12 @@
 | `BUILD_CONTEXT` | `dist` |
 
 ```
-BUILD_COMMAND = curl -fsSL https://raw.githubusercontent.com/cat-of-summer/DockerBundle---python/vX.Y.Z/install.sh | sh -s -- vX.Y.Z && dockerbundle generate --yes
+BUILD_COMMAND = curl -fsSL https://raw.githubusercontent.com/cat-of-summer/DockerBundle---python/vX.Y.Z/install.sh | sh -s -- vX.Y.Z --dir "$RUNNER_TEMP/bin" && "$RUNNER_TEMP/bin/dockerbundle" generate --yes
 ```
+
+Бинарь вызывается по пути, а не по имени: `GITHUB_PATH`, куда установщик дописывает
+каталог, действует только на **следующие** шаги, а установка и генерация здесь — один шаг.
+В отдельном шаге (например, в `CI_COMMAND`) команда `dockerbundle` уже доступна по имени.
 
 `vX.Y.Z` в обоих местах — один и тот же тег: первый выбирает версию скрипта установки,
 второй версию бинарника. **Тег обязателен**: без него скрипт падает с подсказкой. Это

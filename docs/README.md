@@ -526,7 +526,7 @@ git push origin v0.1.0
 |---|---|
 | `ACTION_TRIGGER` | `RELEASE` |
 | `RUNS_ON` | `ubuntu-latest` |
-| `BUILD_COMMAND` | `curl -fsSL .../install.sh \| sh -s -- vX.Y.Z && dockerbundle generate --yes` |
+| `BUILD_COMMAND` | `curl -fsSL .../install.sh \| sh -s -- vX.Y.Z --dir "$RUNNER_TEMP/bin" && "$RUNNER_TEMP/bin/dockerbundle" generate --yes` |
 | `PUBLISH_METHOD` | `docker` |
 | `DOCKERFILE_PATH` | `dist/Dockerfile` |
 | `BUILD_CONTEXT` | `dist` |

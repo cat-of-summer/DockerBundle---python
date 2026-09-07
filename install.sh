@@ -159,6 +159,9 @@ chmod +x "$TARGET"
 if [ -n "${GITHUB_PATH:-}" ]; then
     printf '%s\n' "$INSTALL_DIR" >> "$GITHUB_PATH"
     say "added ${INSTALL_DIR} to GITHUB_PATH"
+    # GITHUB_PATH takes effect in later steps only, never in the one that wrote it. A
+    # caller that installs and generates in a single command has to say where.
+    say "in this same step call it by path: ${TARGET}"
 fi
 
 say "installed ${TARGET}"

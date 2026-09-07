@@ -960,7 +960,7 @@ irm https://raw.githubusercontent.com/cat-of-summer/DockerBundle---python/vX.Y.Z
 |---|---|
 | `ACTION_TRIGGER` | `release` |
 | `RUNS_ON` | `ubuntu-latest` |
-| `BUILD_COMMAND` | `curl -fsSL .../install.sh \| sh -s -- vX.Y.Z && dockerbundle generate --yes` |
+| `BUILD_COMMAND` | `curl -fsSL .../install.sh \| sh -s -- vX.Y.Z --dir "$RUNNER_TEMP/bin" && "$RUNNER_TEMP/bin/dockerbundle" generate --yes` |
 | `PUBLISH_METHOD` | `docker` |
 | `DOCKERFILE_PATH` | `dist/Dockerfile` |
 | `BUILD_CONTEXT` | `dist` |
