@@ -4,6 +4,7 @@
 ## Файлы
 
 - [config.py](config.py.md)
+- [features.py](features.py.md)
 - [log.py](log.py.md)
 - [manifest.py](manifest.py.md)
 - [model.py](model.py.md)

@@ -17,6 +17,8 @@
 ## Файлы
 
 - [.gitattributes](.gitattributes.md)
+- [install.ps1](install.ps1.md)
+- [install.sh](install.sh.md)
 - [main.py](main.py.md)
 
 <!-- DOCGEN:END -->
