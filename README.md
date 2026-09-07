@@ -32,6 +32,7 @@ compose-файлов: он говорит только то, чего в них 
 - [Как разрешаются конфликты](#как-разрешаются-конфликты)
 - [Флаги сборки](#флаги-сборки)
 - [Ограничения](#ограничения)
+- [Установка](#установка)
 
 ---
 
@@ -929,6 +930,44 @@ services:
   Per-service вывод — через `dockerbundle logs <контейнер> <программа>`.
 
 ---
+
+## Установка
+
+Утилита — самодостаточный бинарь: ни Python, ни зависимостей на целевой машине не нужно.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/cat-of-summer/DockerBundle---python/vX.Y.Z/install.sh | sh -s -- vX.Y.Z
+```
+
+Windows:
+
+```powershell
+irm https://raw.githubusercontent.com/cat-of-summer/DockerBundle---python/vX.Y.Z/install.ps1 | iex
+```
+
+Тег обязателен. Скрипт без него падает с подсказкой — это намеренно: стенд, который молча
+пересобирается другим генератором, ровно та беда, ради которой утилита существует.
+Обновление должно быть видно как правка одной строки, а не случиться само.
+
+Скачанное сверяется с опубликованной SHA-256 (`--no-verify` отключает). Каталог установки
+— `--dir`, иначе `$RUNNER_TEMP` под GitHub Actions, иначе `~/.local/bin`.
+
+### В CI
+
+В целевом проекте бинарник **не хранится**. Достаточно переменных репозитория:
+
+| Переменная | Значение |
+|---|---|
+| `ACTION_TRIGGER` | `release` |
+| `RUNS_ON` | `ubuntu-latest` |
+| `BUILD_COMMAND` | `curl -fsSL .../install.sh \| sh -s -- vX.Y.Z && dockerbundle generate --yes` |
+| `PUBLISH_METHOD` | `docker` |
+| `DOCKERFILE_PATH` | `dist/Dockerfile` |
+| `BUILD_CONTEXT` | `dist` |
+
+`dist/` при этом остаётся в `.gitignore`: он генерируется на каждом прогоне. Подробности,
+готовый шаблон workflow и composite action для собственных workflow —
+[`.github/workflow-templates/README.md`](.github/workflow-templates/README.md).
 
 ## Команды
 

@@ -475,11 +475,17 @@ pytest tests/test_golden.py --update-golden
 | `RUNS_ON` | `ubuntu-latest,windows-latest` |
 | `BUILD_COMMAND` | `SKIP_TESTS=true bash build/build.sh` |
 | `CI_COMMAND` | `python -m pytest -m "not docker" -q` |
-| `RELEASE_FILES` | `dist/dockerbundle-*` |
+| `RELEASE_FILES` | `dist/*` |
 
 `ACTION_TRIGGER` обязателен: по умолчанию он равен `WORKFLOW_DISPATCH`, а при этом
 значении пуш тега не запускает ни сборку, ни релиз. `PUSH` дополнительно гоняет CI на
 каждый пуш в любую ветку.
+
+`RELEASE_FILES` — именно `dist/*`, а не `dist/dockerbundle-*`. Шаг `Flatten release asset
+names` в Git_toolkit срезает с имени файла всё до первого glob-символа: при
+`dist/dockerbundle-*` базой оказывается `dist/dockerbundle-`, и в релиз уходит ассет с
+именем `linux-x64`. Установщику нужен предсказуемый URL, поэтому glob не должен заходить
+в имя файла.
 
 Шаги идут в порядке Build → CI command, поэтому `build/build.sh` ставит зависимости
 (включая pytest), а тесты запускаются отдельным шагом — так падение видно как «тесты», а
@@ -517,6 +523,8 @@ git push origin v0.1.0
 | Переменная | Значение |
 |---|---|
 | `ACTION_TRIGGER` | `RELEASE` |
+| `RUNS_ON` | `ubuntu-latest` |
+| `BUILD_COMMAND` | `curl -fsSL .../install.sh \| sh -s -- vX.Y.Z && dockerbundle generate --yes` |
 | `PUBLISH_METHOD` | `docker` |
 | `DOCKERFILE_PATH` | `dist/Dockerfile` |
 | `BUILD_CONTEXT` | `dist` |
@@ -529,16 +537,17 @@ image: ghcr.io/acme/stand:latest
 
 Иначе очередной `dockerbundle generate` без `--image` тихо вернёт в compose `<name>:latest`.
 
-`dist/` при этом **коммитится**, а `BUILD_COMMAND` и `CI_COMMAND` не задаются вовсе.
-Генерация остаётся локальной: `dockerbundle generate`, результат идёт в коммит и виден в
-дифе — ровно то, ради чего в самой утилите живут golden-тесты.
+`BUILD_COMMAND` ставит утилиту из релиза этого репозитория и генерирует `dist/` прямо на
+раннере — бинарник в целевом репозитории держать не нужно, `dist/` остаётся в
+`.gitignore`. Полная инструкция и шаблон: [`.github/workflow-templates/`](../.github/workflow-templates/README.md).
 
-Так сделано не из вкусовых соображений. В `docker-publish` из Git_toolkit шаг
-`Download workspace from ci` распаковывает артефакт job `ci` в каталог `BUILD_CONTEXT`, а
-job `ci` заливает рабочее дерево целиком. При `BUILD_CONTEXT=dist` дерево оказывается в
-`dist/`, `dist/Dockerfile` перестаёт существовать, и шаг `Validate Dockerfile` падает.
-Пустые `BUILD_COMMAND` и `CI_COMMAND` дают `run_ci=false`, скачивание артефакта
-пропускается по условию, и сборка идёт по тому, что выдал `actions/checkout`.
+Работает это так: job `ci` выполняет `BUILD_COMMAND` и заливает рабочее дерево целиком
+артефактом `workspace-<os>`, а `docker-publish` распаковывает его **в корень** рабочего
+каталога (`actions/download-artifact` там вызывается с `path: .`). Поэтому
+`dist/Dockerfile` оказывается на месте, и сборка идёт с контекстом `dist`.
+
+При `RUNS_ON` из нескольких ОС артефакты сливаются в один каталог, так что для целевого
+проекта оставьте одну — иначе два прогона положат разные `dist/` друг на друга.
 
 Job `docker-publish` сам логинится в ghcr и ставит теги `:версия`, `:latest`, `:branch`.
 Имя образа по умолчанию — `github.repository` в нижнем регистре; переопределяется через

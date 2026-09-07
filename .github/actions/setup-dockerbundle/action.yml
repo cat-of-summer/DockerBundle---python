@@ -1,0 +1,57 @@
+name: Setup dockerbundle
+description: Install a pinned dockerbundle release and put it on PATH.
+
+# For workflows written by hand. A project driven by git_toolkit's reusable ci-cd.yml
+# needs nothing from here: a reusable workflow has no slot for a caller's step, so such
+# a project runs install.sh from BUILD_COMMAND instead.
+
+inputs:
+  version:
+    description: Release tag to install, e.g. v1.2.3. Required — pinning is the point.
+    required: true
+  install-dir:
+    description: Where to put the binary. Defaults to a directory under RUNNER_TEMP.
+    required: false
+    default: ''
+  verify:
+    description: Check the published SHA-256 of the download.
+    required: false
+    default: 'true'
+  repository:
+    description: Repository to fetch the release from.
+    required: false
+    default: cat-of-summer/DockerBundle---python
+
+runs:
+  using: composite
+  steps:
+    - name: Install dockerbundle (POSIX)
+      if: runner.os != 'Windows'
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        INSTALL_DIR: ${{ inputs['install-dir'] }}
+        VERIFY: ${{ inputs.verify }}
+        REPO: ${{ inputs.repository }}
+      run: |
+        set -euo pipefail
+        # Word splitting on $args is deliberate; every part is a separate argument.
+        # shellcheck disable=SC2086
+        args="$VERSION --repo $REPO"
+        [ -n "$INSTALL_DIR" ] && args="$args --dir $INSTALL_DIR"
+        [ "$VERIFY" = "true" ] || args="$args --no-verify"
+        sh "${{ github.action_path }}/../../../install.sh" $args
+
+    - name: Install dockerbundle (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      env:
+        VERSION: ${{ inputs.version }}
+        INSTALL_DIR: ${{ inputs['install-dir'] }}
+        VERIFY: ${{ inputs.verify }}
+        REPO: ${{ inputs.repository }}
+      run: |
+        $params = @{ Version = $env:VERSION; Repo = $env:REPO }
+        if ($env:INSTALL_DIR) { $params.Dir = $env:INSTALL_DIR }
+        if ($env:VERIFY -ne 'true') { $params.NoVerify = $true }
+        & "${{ github.action_path }}/../../../install.ps1" @params
