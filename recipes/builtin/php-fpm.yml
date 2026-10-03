@@ -24,12 +24,34 @@ install:
     - unzip
     - git
 
+# What each service's pool runs as. www-data is what the official php image uses. A
+# service whose state lives in volumes wants root instead: Docker creates the volume
+# directories as root, and www-data cannot write to them. A manifest recipe extending
+# this one says so with `+params: {fpm_user: root, fpm_group: root}`.
+# clear_env = no, as in the official image: without it the code does not see the
+# container's environment, which is where every setting from .env arrives.
+params:
+  fpm_user: www-data
+  fpm_group: www-data
+  clear_env: "no"
+  pm_max_children: 10
+
 run:
   debian:
     - "curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer"
-    # The stock pool listens on 9000; each service gets its own pool file instead, so
-    # remove the default to keep the port free for whichever service claims it.
-    - "rm -f /etc/php/*/fpm/pool.d/www.conf"
+    # Debian keeps everything under /etc/php/<version>/ and names the binary
+    # php-fpm<version>. The version is whatever the base ships, so it is read here rather
+    # than pinned: /etc/php/current points at it, and php-fpm is the unversioned name.
+    # The stock www pool listens on 9000; each service gets its own pool file instead,
+    # so it goes, and the master reads only the bundle's pools.
+    - >-
+      V=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')
+      && ln -sfn /etc/php/$V /etc/php/current
+      && ln -sf /usr/sbin/php-fpm$V /usr/local/sbin/php-fpm
+      && rm -f /etc/php/$V/fpm/pool.d/www.conf
+      && mkdir -p /etc/php/conf.d /etc/php/fpm/pool.d
+      && printf '[global]\npid = /run/php-fpm.pid\nerror_log = /proc/self/fd/2\ndaemonize = no\ninclude = /etc/php/fpm/pool.d/*.conf\n'
+      > /etc/php/fpm/php-fpm.conf
 
 # One php-fpm master with one pool per service. Separate masters would collide on the
 # pid file and the log; pools are php-fpm's own mechanism for exactly this.
@@ -55,9 +77,23 @@ port:
     type: fpm_pool
     file: /etc/php/fpm/pool.d/{slug}.conf
 
+# The service's ini files land in /etc/php/conf.d, which Debian's php does not scan; they
+# are linked into the scan directories of both fpm and cli, last in order so they win.
+# Then the pool: on the port the bundle assigned, so a second PHP service moved off 9000
+# by a collision listens where nginx is told to look.
+post_copy:
+  - >-
+    for f in /etc/php/conf.d/{slug}-*.ini; do [ -e "$f" ] || continue;
+    for s in fpm cli; do ln -sf "$f" "/etc/php/current/$s/conf.d/99-$(basename "$f")"; done;
+    done
+  - >-
+    printf '[{slug}]\nuser = {param.fpm_user}\ngroup = {param.fpm_group}\nlisten = 127.0.0.1:{port}\npm = dynamic\npm.max_children = {param.pm_max_children}\npm.start_servers = 2\npm.min_spare_servers = 1\npm.max_spare_servers = 3\nclear_env = {param.clear_env}\ncatch_workers_output = yes\ndecorate_workers_output = no\n'
+    > /etc/php/fpm/pool.d/{slug}.conf
+
+# -R lets a pool run as root; for any other user it changes nothing.
 supervisor:
   - name: php-fpm
-    command: php-fpm -F -y /etc/php/fpm/php-fpm.conf
+    command: php-fpm -F -R -y /etc/php/fpm/php-fpm.conf
     priority: 30
     stopsignal: QUIT
     stopwaitsecs: 30

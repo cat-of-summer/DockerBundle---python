@@ -82,8 +82,15 @@ def test_named_and_bind_mounts_are_distinguished(catalog):
 
 
 def _write_included_package(root):
-    """A package shaped like docker_toolkit: an entry file that is nothing but include:."""
-    (root / ".env").write_text("INSTANCE=_x\nAPP_PORT=8931\n", encoding="utf-8")
+    """A package shaped like docker_toolkit: an entry file that is nothing but include:.
+
+    Checked out and configured: the committed ``.env.example`` beside a developer's own
+    ``.env`` with different values and a secret in it.
+    """
+    (root / ".env.example").write_text("INSTANCE=_x\nAPP_PORT=8931\n", encoding="utf-8")
+    (root / ".env").write_text(
+        "INSTANCE=_local\nAPP_PORT=9999\nSECRET=hunter2\n", encoding="utf-8"
+    )
     (root / "docker-compose.yml").write_text(
         "include:\n"
         "  - path: services/app/docker-compose.yml\n"
@@ -138,13 +145,41 @@ def test_include_resolves_paths_against_project_directory(tmp_path):
 def test_include_env_file_feeds_interpolation(tmp_path):
     path = _write_included_package(tmp_path)
     spec = composefile.load_services(path, package="stand")[0]
-    # ${INSTANCE} came from the .env named by the include entry.
+    # ${APP_PORT} came from the file the include entry names — read as its .env.example.
     assert spec.ports[0].published == "127.0.0.1:8931"
     assert {entry.key for entry in spec.env_vars} >= {"INSTANCE", "APP_PORT"}
     # The package .env and the include's env_file are the same file here; keys must not
     # be listed twice or the merged dist/.env.example would repeat them.
     keys = [entry.key for entry in spec.env_vars]
     assert len(keys) == len(set(keys))
+
+
+def test_local_dotenv_stays_out_of_the_catalogue(tmp_path):
+    path = _write_included_package(tmp_path)
+    spec = composefile.load_services(path, package="stand")[0]
+    values = {entry.key: entry.value for entry in spec.env_vars}
+    # Neither the developer's values nor their secret reach dist/.env.example.
+    assert values["INSTANCE"] == "_x"
+    assert values["APP_PORT"] == "8931"
+    assert "SECRET" not in values
+
+
+def test_env_from_dotenv_reads_the_local_file(tmp_path):
+    path = _write_included_package(tmp_path)
+    spec = composefile.load_services(path, package="stand", dotenv=True)[0]
+    values = {entry.key: entry.value for entry in spec.env_vars}
+    assert values["APP_PORT"] == "9999"
+    assert values["SECRET"] == "hunter2"
+    assert spec.ports[0].published == "127.0.0.1:9999"
+
+
+def test_include_of_dotenv_without_example_is_skipped_with_a_warning(tmp_path):
+    path = _write_included_package(tmp_path)
+    (tmp_path / ".env.example").unlink()
+    warnings: list[str] = []
+    spec = composefile.load_services(path, package="stand", warnings=warnings)[0]
+    assert "SECRET" not in {entry.key for entry in spec.env_vars}
+    assert any("no .env.example next to it" in warning for warning in warnings)
 
 
 def test_entrypoint_is_found_beside_the_dockerfile(tmp_path):

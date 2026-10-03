@@ -19,7 +19,7 @@ from typing import Any
 import yaml
 
 from core import features as features_mod
-from core.model import MountMode, ServiceMode
+from core.model import PUBLISH_NONE, MountMode, ServiceMode
 from core.version import MANIFEST_VERSION
 
 DEFAULT_BASES: dict[str, str] = {
@@ -159,7 +159,7 @@ class ServiceEntry:
     """Original container port -> port assigned inside the bundle."""
 
     publish: dict[int, str] = field(default_factory=dict)
-    """Original container port -> host publish spec."""
+    """Original container port -> host publish spec (``127.0.0.1:8081``), or ``none``."""
 
     mounts: dict[str, str] = field(default_factory=dict)
     """Mount target -> ``copy`` | ``volume`` | ``skip``."""
@@ -219,10 +219,32 @@ class ServiceEntry:
             recipe=str(raw.get("recipe", "")),
             replicas=replicas,
             ports={int(k): int(v) for k, v in (raw.get("ports") or {}).items()},
-            publish={int(k): str(v) for k, v in (raw.get("publish") or {}).items()},
+            publish=_publish(raw.get("publish"), slug),
             mounts=mounts,
             env_prefix=str(raw.get("env_prefix", "")),
         )
+
+
+def _publish(raw: Any, slug: str) -> dict[int, str]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ManifestError(f"services.{slug}.publish must be a mapping of port -> spec")
+    result: dict[int, str] = {}
+    for port, spec in raw.items():
+        try:
+            original = int(port)
+        except (TypeError, ValueError) as exc:
+            raise ManifestError(f"services.{slug}.publish: {port!r} is not a port") from exc
+        # YAML reads a bare `no`/`false` as a boolean; take it to mean what `none` says.
+        text = PUBLISH_NONE if spec is False or spec is None else str(spec).strip()
+        if not text:
+            raise ManifestError(
+                f"services.{slug}.publish.{original}: expected a host spec such as "
+                f"127.0.0.1:8081, or {PUBLISH_NONE}"
+            )
+        result[original] = text
+    return result
 
 
 def _env_rule_text(text: str, where: str) -> str:

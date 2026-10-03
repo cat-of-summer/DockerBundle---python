@@ -110,6 +110,10 @@ class MountSpec:
         return not self.named and self.kind is not MountKind.SOCKET
 
 
+#: The ``publish:`` value that keeps a port off the host altogether.
+PUBLISH_NONE = "none"
+
+
 @dataclass
 class PortSpec:
     """A port the service listens on, plus how it reaches the outside world."""
@@ -337,6 +341,12 @@ class PlannedService:
     programs: list[SupervisorProgram] = field(default_factory=list)
     copies: list[CopyOp] = field(default_factory=list)
     ports: list[PortSpec] = field(default_factory=list)
+    publish: dict[int, str] = field(default_factory=dict)
+    """Original port -> host publish spec from ``docker-bundle.yml``, or ``none``.
+
+    Overrides whatever the source compose published, including publishing nothing.
+    """
+
     volumes: list[MountSpec] = field(default_factory=list)
     readiness: list[ReadinessProbe] = field(default_factory=list)
     init_script: str = ""

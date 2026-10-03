@@ -19,6 +19,7 @@ from core.model import (
     MountMode,
     Origin,
     PlannedService,
+    PortSpec,
     ReadinessProbe,
     ServiceMode,
     ServiceSpec,
@@ -27,7 +28,7 @@ from core.model import (
     normalise_slug,
 )
 from plan import envmerge, graph, mounts, ports
-from plan.substitute import substitute
+from plan.substitute import SubstitutionError, substitute
 from recipes import fallback
 from recipes.match import Registry
 from recipes.schema import Recipe
@@ -58,6 +59,8 @@ class Resolved:
     replicas: int = 1
     prefix: str = ""
     ports: list = field(default_factory=list)
+    local: dict[str, int] = field(default_factory=dict)
+    """Slug -> port of every baked service, for ``{local:<slug>}`` in recipe strings."""
 
     @property
     def bakeable(self) -> bool:
@@ -215,6 +218,22 @@ def _copies_for(
     return copies, relocated
 
 
+def _publish_for(
+    slug: str, assigned: list[PortSpec], manifest: Manifest, warnings: list[str]
+) -> dict[int, str]:
+    """The ``publish:`` overrides of one service, minus those naming no port it has."""
+    entry = manifest.services.get(slug)
+    if not entry or not entry.publish:
+        return {}
+    known = {port.original for port in assigned}
+    for original in sorted(set(entry.publish) - known):
+        warnings.append(
+            f"{slug}: publish names port {original}, which the service does not listen on "
+            f"(it has {', '.join(map(str, sorted(known))) or 'none'}); ignored"
+        )
+    return {original: spec for original, spec in entry.publish.items() if original in known}
+
+
 def _values(item: Resolved, port: int | None) -> dict[str, object]:
     """The placeholders a recipe's strings may use for this service."""
     spec = item.spec
@@ -227,6 +246,8 @@ def _values(item: Resolved, port: int | None) -> dict[str, object]:
         # Lets a recipe lift files out of the very image the service runs, without
         # pinning the version a second time inside the recipe.
         "image": spec.effective_image,
+        "params": item.recipe.params,
+        "local": item.local,
     }
 
 
@@ -405,6 +426,7 @@ def build(
         spec, recipe = item.spec, item.recipe
         assigned = allocation.for_service(spec.slug)
         port = assigned[0].container if assigned else None
+        item.local = assigned_ports
         values = _values(item, port)
 
         planned = PlannedService(
@@ -412,6 +434,7 @@ def build(
             recipe_name=recipe.name,
             bakeable=item.bakeable,
             ports=assigned,
+            publish=_publish_for(spec.slug, assigned, manifest, warnings),
             rootfs_import=item.is_fallback,
         )
 
@@ -429,80 +452,86 @@ def build(
             )
             continue
 
-        planned.copies, relocated = _copies_for(item, port, features)
-        planned.volumes = [mount for mount in spec.mounts if mount.mode is MountMode.VOLUME]
+        # Every recipe string is expanded below; a {local:x} naming a service that is not
+        # in the bundle is a mistake in the configuration, reported with the rest.
+        try:
+            planned.copies, relocated = _copies_for(item, port, features)
+            planned.volumes = [mount for mount in spec.mounts if mount.mode is MountMode.VOLUME]
 
-        working_dir = spec.working_dir or ""
-        planned.init_cwd = relocated.get(working_dir, working_dir)
+            working_dir = spec.working_dir or ""
+            planned.init_cwd = relocated.get(working_dir, working_dir)
 
-        extra_env = envmerge.process_environment(spec, merged)
-        # The same mapping in shell form, for the service's own entrypoint at init time.
-        planned.init_env = {
-            key: "${" + value[len("%(ENV_") : -len(")s")] + "}"
-            for key, value in extra_env.items()
-            if value.startswith("%(ENV_") and value.endswith(")s")
-        }
+            extra_env = envmerge.process_environment(spec, merged)
+            # The same mapping in shell form, for the service's own entrypoint at init time.
+            planned.init_env = {
+                key: "${" + value[len("%(ENV_") : -len(")s")] + "}"
+                for key, value in extra_env.items()
+                if value.startswith("%(ENV_") and value.endswith(")s")
+            }
 
-        # A shared runtime contributes its programs and packages exactly once, however
-        # many services use it: one nginx master serving many server blocks, one php-fpm
-        # master with a pool per service.
-        if recipe.shared:
-            if recipe.shared not in shared_seen:
-                shared_seen.add(recipe.shared)
-                planned.programs = _programs_for(item, port, {}, features, warnings)
+            # A shared runtime contributes its programs and packages exactly once, however
+            # many services use it: one nginx master serving many server blocks, one php-fpm
+            # master with a pool per service.
+            if recipe.shared:
+                if recipe.shared not in shared_seen:
+                    shared_seen.add(recipe.shared)
+                    planned.programs = _programs_for(item, port, {}, features, warnings)
+                else:
+                    planned.programs = []
             else:
-                planned.programs = []
-        else:
-            planned.programs = _programs_for(item, port, extra_env, features, warnings)
+                planned.programs = _programs_for(item, port, extra_env, features, warnings)
 
-        for rule in recipe.readiness_for(features):
-            planned.readiness.append(
-                ReadinessProbe(
-                    kind=rule.type,
-                    target=substitute(rule.target, values),
-                    timeout=rule.timeout,
-                    label=spec.slug,
+            for rule in recipe.readiness_for(features):
+                planned.readiness.append(
+                    ReadinessProbe(
+                        kind=rule.type,
+                        target=substitute(rule.target, values),
+                        timeout=rule.timeout,
+                        label=spec.slug,
+                    )
                 )
-            )
 
-        planned.build_steps = [
-            substitute(command, values) for command in recipe.post_copy_for(features)
-        ]
-        planned.pre_init = [
-            substitute(command, values) for command in recipe.pre_init_for(features)
-        ]
-        planned.post_init = [
-            substitute(command, values) for command in recipe.post_init_for(features)
-        ]
+            planned.build_steps = [
+                substitute(command, values) for command in recipe.post_copy_for(features)
+            ]
+            planned.pre_init = [
+                substitute(command, values) for command in recipe.pre_init_for(features)
+            ]
+            planned.post_init = [
+                substitute(command, values) for command in recipe.post_init_for(features)
+            ]
 
-        if item.is_fallback and spec.effective_image:
-            stage = fallback.stage_name(spec.slug)
-            planned.stage = stage
-            plan.stages.append((stage, spec.effective_image))
-            plan.rootfs_stages.append(stage)
+            if item.is_fallback and spec.effective_image:
+                stage = fallback.stage_name(spec.slug)
+                planned.stage = stage
+                plan.stages.append((stage, spec.effective_image))
+                plan.rootfs_stages.append(stage)
 
-        # One stage per distinct image, however many recipes copy out of it.
-        for copy in planned.copies:
-            if not copy.from_image:
-                continue
-            stage = image_stages.get(copy.from_image)
-            if stage is None:
-                stage = f"img_{normalise_slug(copy.from_image)}"
-                image_stages[copy.from_image] = stage
-                plan.stages.append((stage, copy.from_image))
-            copy.from_stage = stage
+            # One stage per distinct image, however many recipes copy out of it.
+            for copy in planned.copies:
+                if not copy.from_image:
+                    continue
+                stage = image_stages.get(copy.from_image)
+                if stage is None:
+                    stage = f"img_{normalise_slug(copy.from_image)}"
+                    image_stages[copy.from_image] = stage
+                    plan.stages.append((stage, copy.from_image))
+                copy.from_stage = stage
 
-        for fam, packages in recipe.install.items():
-            bucket = install.setdefault(fam, [])
-            for package in packages:
-                if package not in bucket:
-                    bucket.append(package)
-        for fam in recipe.run:
-            bucket = run_steps.setdefault(fam, [])
-            for command in recipe.runs_for(fam, features):
-                rendered = substitute(command, values)
-                if rendered not in bucket:
-                    bucket.append(rendered)
+            for fam, packages in recipe.install.items():
+                bucket = install.setdefault(fam, [])
+                for package in packages:
+                    if package not in bucket:
+                        bucket.append(package)
+            for fam in recipe.run:
+                bucket = run_steps.setdefault(fam, [])
+                for command in recipe.runs_for(fam, features):
+                    rendered = substitute(command, values)
+                    if rendered not in bucket:
+                        bucket.append(rendered)
+        except SubstitutionError as exc:
+            problems.append(f"{spec.slug}: {exc}")
+            continue
 
         # The service's own entrypoint runs verbatim at container start, exactly as its
         # author intended. It is never parsed or split. A recipe opts out with

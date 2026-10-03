@@ -72,11 +72,14 @@ def _prefixed(spec: ServiceSpec, prefix: str) -> ServiceSpec:
     return spec
 
 
-def collect(sources: list[SourceRef], root: Path, *, pull: bool = False) -> Discovery:
+def collect(
+    sources: list[SourceRef], root: Path, *, pull: bool = False, dotenv: bool = False
+) -> Discovery:
     """Resolve every source into services.
 
     ``root`` anchors relative paths — the directory holding ``docker-bundle.yml``.
     A source that fails contributes a warning and is skipped; the rest still load.
+    ``dotenv`` lets a compose source's ``.env`` stand in for its ``.env.example``.
     """
     found: list[tuple[ServiceSpec, SourceRef]] = []
     warnings: list[str] = []
@@ -91,7 +94,7 @@ def collect(sources: list[SourceRef], root: Path, *, pull: bool = False) -> Disc
             if not directory.is_dir():
                 warnings.append(f"catalog {directory} does not exist")
                 continue
-            services, catalog_warnings = catalog.load(directory)
+            services, catalog_warnings = catalog.load(directory, dotenv=dotenv)
             add(services, source)
             warnings.extend(catalog_warnings)
 
@@ -103,7 +106,11 @@ def collect(sources: list[SourceRef], root: Path, *, pull: bool = False) -> Disc
             try:
                 add(
                     composefile.load_services(
-                        path, package=path.parent.name, origin=Origin.COMPOSE
+                        path,
+                        package=path.parent.name,
+                        origin=Origin.COMPOSE,
+                        dotenv=dotenv,
+                        warnings=warnings,
                     ),
                     source,
                 )

@@ -31,9 +31,9 @@ RUN apt-get update \
         php-gd \
         php-bcmath \
         php-curl \
-        php-sqlite3 \
         unzip \
         git \
+        php-sqlite3 \
         cron \
         nginx-light \
         gettext-base \
@@ -42,7 +42,7 @@ RUN apt-get update \
         npm \
     && rm -rf /var/lib/apt/lists/*
 RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
-RUN rm -f /etc/php/*/fpm/pool.d/www.conf
+RUN V=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;') && ln -sfn /etc/php/$V /etc/php/current && ln -sf /usr/sbin/php-fpm$V /usr/local/sbin/php-fpm && rm -f /etc/php/$V/fpm/pool.d/www.conf && mkdir -p /etc/php/conf.d /etc/php/fpm/pool.d && printf '[global]\npid = /run/php-fpm.pid\nerror_log = /proc/self/fd/2\ndaemonize = no\ninclude = /etc/php/fpm/pool.d/*.conf\n' > /etc/php/fpm/php-fpm.conf
 RUN rm -f /etc/nginx/sites-enabled/default
 
 # ---- mysql (mysql) --------------------------------------
@@ -51,11 +51,13 @@ COPY context/mysql/mysql.cnf /etc/mysql/conf.d/mysql.cnf
 # ---- laravel_nginx_laravel (laravel) --------------------
 COPY context/laravel_nginx_laravel/php.ini /etc/php/conf.d/laravel_nginx_laravel-custom.ini
 COPY context/laravel_nginx_laravel/opcache.ini /etc/php/conf.d/laravel_nginx_laravel-opcache.ini
+COPY context/laravel_nginx_laravel/data /var/www/laravel_nginx_laravel
 COPY context/laravel_nginx_laravel/crontab /etc/cron.d/laravel_nginx_laravel
 RUN chmod 0644 /etc/cron.d/laravel_nginx_laravel
-COPY context/laravel_nginx_laravel/data /var/www/laravel_nginx_laravel
 COPY context/laravel_nginx_laravel/entrypoint.sh /usr/local/bin/entrypoint-laravel_nginx_laravel.sh
 RUN chmod 0755 /usr/local/bin/entrypoint-laravel_nginx_laravel.sh
+RUN for f in /etc/php/conf.d/laravel_nginx_laravel-*.ini; do [ -e "$f" ] || continue; for s in fpm cli; do ln -sf "$f" "/etc/php/current/$s/conf.d/99-$(basename "$f")"; done; done
+RUN printf '[laravel_nginx_laravel]\nuser = www-data\ngroup = www-data\nlisten = 127.0.0.1:9000\npm = dynamic\npm.max_children = 10\npm.start_servers = 2\npm.min_spare_servers = 1\npm.max_spare_servers = 3\nclear_env = no\ncatch_workers_output = yes\ndecorate_workers_output = no\n' > /etc/php/fpm/pool.d/laravel_nginx_laravel.conf
 RUN sed -i -e 's#/var/www/html#/var/www/laravel_nginx_laravel#g' -e 's#^\([^#[:space:]][^[:space:]]*\([[:space:]]\+[^[:space:]]\+\)\{4\}\)[[:space:]]\+#\1 root #' /etc/cron.d/laravel_nginx_laravel || true
 
 # ---- laravel_nginx_nginx (nginx) ------------------------
@@ -100,7 +102,7 @@ LABEL dev.dockerbundle.version="0.2.0" \
       dev.dockerbundle.format="2" \
       dev.dockerbundle.bundle="shop" \
       dev.dockerbundle.variant="cpu" \
-      dev.dockerbundle.context-digest="sha256:ef974b00afcf461e5d5c41de9f5108cdf45555b25fd79073502b93dc0a14f354" \
+      dev.dockerbundle.context-digest="sha256:02e971f624f83200e46fbd4b79e464fe88df34282402cbf3dd7bae867b0e302b" \
       dev.dockerbundle.required-env="LARAVEL_EXTERNAL_ACCESS,LARAVEL_NGINX_NGINX_EXTERNAL_ACCESS,MYSQL_EXTERNAL_ACCESS,VUE_EXTERNAL_ACCESS,VUE_NGINX_VITE_NGINX_EXTERNAL_ACCESS"
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \

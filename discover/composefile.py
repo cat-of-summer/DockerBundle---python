@@ -418,6 +418,8 @@ def _fragments(
     source: str,
     seen: frozenset[Path],
     depth: int = 0,
+    dotenv: bool = False,
+    warnings: list[str] | None = None,
 ) -> list[_Fragment]:
     """Expand ``path`` and everything it includes, innermost document first.
 
@@ -442,12 +444,21 @@ def _fragments(
         child_values = dict(values)
         child_entries: list[EnvVar] = []
         for env_path in entry.env_files:
+            env_path = _catalogue_file(env_path, dotenv=dotenv, warnings=warnings)
+            if env_path is None:
+                continue
             env = envfile.load(env_path, source=source)
             child_entries.extend(env.entries)
             child_values.update(env.as_dict())
 
         for fragment in _fragments(
-            entry.path, child_values, source=source, seen=seen, depth=depth + 1
+            entry.path,
+            child_values,
+            source=source,
+            seen=seen,
+            depth=depth + 1,
+            dotenv=dotenv,
+            warnings=warnings,
         ):
             if entry.project_directory is not None and not fragment.explicit_dir:
                 fragment.source_dir = entry.project_directory
@@ -473,6 +484,28 @@ def _fragments(
     return fragments
 
 
+def _catalogue_file(path: Path, *, dotenv: bool, warnings: list[str] | None) -> Path | None:
+    """The file to read for an ``env_file:`` an include names.
+
+    ``.env`` is one developer's working configuration — local passwords, a captcha turned
+    off for testing. Reading it would carry those values into the generated
+    ``.env.example``, and make a generate on a laptop differ from the same generate in CI,
+    where no ``.env`` exists. Its committed twin ``.env.example`` is read instead, unless
+    ``--env-from-dotenv`` asked for ``.env`` itself.
+    """
+    if dotenv or path.name != ".env":
+        return path
+    example = path.with_name(".env.example")
+    if example.is_file():
+        return example
+    if warnings is not None and path.is_file():
+        warnings.append(
+            f"{path}: include reads .env, and there is no .env.example next to it; its "
+            f"values are left out (--env-from-dotenv reads .env itself)"
+        )
+    return None
+
+
 def _merge_env(base: list[EnvVar], extra: list[EnvVar]) -> list[EnvVar]:
     """Concatenate two ``.env`` catalogues, first definition of a key winning."""
     seen = {entry.key for entry in base}
@@ -486,12 +519,16 @@ def load_services(
     slug_base: str = "",
     origin: Origin = Origin.COMPOSE,
     extra_values: dict[str, str] | None = None,
+    dotenv: bool = False,
+    warnings: list[str] | None = None,
 ) -> list[ServiceSpec]:
     """Load every service from a compose file.
 
-    Values for interpolation come from a sibling ``.env`` (preferred) or ``.env.example``,
-    overlaid with ``extra_values``. The same entries are attached to each service as its
-    :attr:`ServiceSpec.env_vars`, so the planner can merge them into ``dist/.env.example``.
+    Values for interpolation come from the sibling ``.env.example``, overlaid with
+    ``extra_values``. A sibling ``.env`` is read — and preferred — only with ``dotenv``:
+    it holds one developer's working values, not the defaults a deployment starts from.
+    The same entries are attached to each service as its :attr:`ServiceSpec.env_vars`,
+    so the planner can merge them into ``dist/.env.example``.
 
     ``slug_base`` overrides the stem used to build slugs; catalogues pass the package name
     with its ordering prefix stripped, so ``3. mysql`` yields ``mysql`` rather than
@@ -501,12 +538,20 @@ def load_services(
     package = package or directory.name
     package_slug = normalise_slug(slug_base or package)
 
-    env = envfile.load_optional(directory, ".env", ".env.example", source=package_slug)
+    names = (".env", ".env.example") if dotenv else (".env.example",)
+    env = envfile.load_optional(directory, *names, source=package_slug)
     values = env.as_dict()
     if extra_values:
         values.update(extra_values)
 
-    fragments = _fragments(path, values, source=package_slug, seen=frozenset())
+    fragments = _fragments(
+        path,
+        values,
+        source=package_slug,
+        seen=frozenset(),
+        dotenv=dotenv,
+        warnings=warnings,
+    )
 
     # Fold the include chain into one set of services. The directory a service's paths
     # resolve against is the one that first declared it — that is where its build context

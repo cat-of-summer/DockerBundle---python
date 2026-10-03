@@ -67,7 +67,7 @@ mysql становится соседним процессом, а не конт
 
 ```
 1. discover   sources: → читает compose-файлы, раскрывает include:,
-              подставляет ${...} из .env, достаёт образы, порты,
+              подставляет ${...} из .env.example, достаёт образы, порты,
               маунты, переменные, depends_on
                     │
                     ▼
@@ -346,9 +346,12 @@ COPY context/mysql/mysql.cnf /etc/mysql/conf.d/mysql.cnf
 # ---- laravel_nginx_laravel (laravel) --------------------
 COPY context/laravel_nginx_laravel/php.ini    /etc/php/conf.d/laravel_nginx_laravel-custom.ini
 COPY context/laravel_nginx_laravel/opcache.ini /etc/php/conf.d/laravel_nginx_laravel-opcache.ini
-COPY context/laravel_nginx_laravel/crontab    /etc/cron.d/laravel_nginx_laravel
 COPY context/laravel_nginx_laravel/data       /var/www/laravel_nginx_laravel
+COPY context/laravel_nginx_laravel/crontab    /etc/cron.d/laravel_nginx_laravel
 COPY context/laravel_nginx_laravel/entrypoint.sh /usr/local/bin/entrypoint-laravel_nginx_laravel.sh
+RUN for f in /etc/php/conf.d/laravel_nginx_laravel-*.ini; do ... ln -sf "$f" /etc/php/current/$s/conf.d/ ...
+RUN printf '[laravel_nginx_laravel]\nuser = www-data\n...listen = 127.0.0.1:9000\n...' \
+    > /etc/php/fpm/pool.d/laravel_nginx_laravel.conf
 RUN sed -i -e 's#/var/www/html#/var/www/laravel_nginx_laravel#g' ... /etc/cron.d/laravel_nginx_laravel
 
 # ---- vue_nginx_vite_nginx (nginx) -----------------------
@@ -361,7 +364,12 @@ RUN sed -i -E 's/^([[:space:]]*)listen[[:space:]]+80([^0-9]|$)/\1listen 20000\2/
 
 - **`php.ini` уехал** из `/usr/local/etc/php/conf.d/custom.ini` (путь официального образа
   `php:fpm`) в `/etc/php/conf.d/laravel_nginx_laravel-custom.ini` — путь дебиановского
-  php-fpm. Плюс в имя добавлен слаг, чтобы второй PHP-сервис не затёр первый.
+  php-fpm. Плюс в имя добавлен слаг, чтобы второй PHP-сервис не затёр первый. Debian
+  читает ini только из `/etc/php/<версия>/{fpm,cli}/conf.d`, поэтому файлы туда
+  прилинкованы. Версию рецепт узнаёт на сборке и оставляет ссылку `/etc/php/current`;
+  бинарь `php-fpm<версия>` доступен как `php-fpm`.
+- **У сервиса свой pool** `/etc/php/fpm/pool.d/<слаг>.conf` на назначенном ему порту, а
+  один мастер php-fpm обслуживает все pool'ы.
 - **Код уехал** из общего `/var/www/html` в `/var/www/laravel_nginx_laravel`. Двум
   сервисам нельзя жить в одном каталоге.
 - **`crontab` стал `/etc/cron.d/`-файлом**: у системного cron другой формат — в строке
@@ -530,7 +538,18 @@ wait "$SUPERVISORD_PID"
 
 ### .env.example
 
-Все `.env.example` пакетов слиты в один файл, разбитый на секции:
+Все `.env.example` пакетов слиты в один файл, разбитый на секции. Значения берутся
+**только из `.env.example`** — и для подстановки `${...}` в compose, и для этого файла.
+Это касается и `include: … env_file: .env`: вместо `.env` читается соседний
+`.env.example`. Локальный `.env` — рабочие значения разработчика: пароли, отключённая для
+отладки капча. В шаблон развёртывания они попадать не должны. Кроме того, генерация на
+ноутбуке и в CI (где `.env` нет) иначе давала бы разный результат. Если нужен именно
+`.env`, есть флаг `generate --env-from-dotenv`; с ним выводится предупреждение.
+
+В шапке файла — `INSTANCE`. Пакеты называют им контейнеры и роутеры traefik
+(`traefik.http.routers.nginx${INSTANCE}`), и при пустом значении у двух бандлов на одном
+traefik роутеры совпали бы. Поэтому берётся значение из `.env.example` пакетов, а если
+там пусто — `_<name бандла>`.
 
 ```ini
 # ---- global --------------------------------------------------------------------
@@ -585,7 +604,6 @@ services:
     env_file: .env
     ports:
       - "${EXTERNAL_ACCESS_DB}"        ← переменная, а не её текущее значение
-      - "127.0.0.1:9000:9000"
       - "${EXTERNAL_ACCESS_SITE}"
       - "${VITE_ACCESS}"
       - "127.0.0.1:20000:20000"        ← литерал: порт переехал, переменная
@@ -611,6 +629,18 @@ volumes:
 Публикация портов переносится **записью, а не значением**: иначе хост-порт застыл бы в
 образе и `.env` развёртывания его бы уже не сдвинул — а это единственное, ради чего этот
 файл существует. Как только порт переехал из-за конфликта, запись становится литералом.
+
+Публикуется **только то, что было опубликовано в исходном compose**. У php-fpm `ports:`
+нет: nginx ходит к нему по loopback внутри того же контейнера, поэтому 9000 наружу не
+выходит. Иначе два бандла на одной машине спорили бы за один порт хоста.
+
+Переопределить это можно для каждого порта (ключ — исходный порт сервиса):
+
+```yaml
+services:
+  app_php:   {publish: {9000: "127.0.0.1:9100"}}   # опубликовать там, где не было
+  app_nginx: {publish: {80: none}}                 # снять публикацию из исходника
+```
 
 Метки сервисов тоже переезжают на контейнер бандла, с подстановкой назначенного порта в
 `traefik.http.services.*.loadbalancer.server.port`.
@@ -727,8 +757,44 @@ recipes:
 ```
 
 В строках доступны подстановки `{slug}`, `{port}`, `{name}`, `{package}`, `{prefix}`,
-`{image}`. Всё остальное — включая `${VAR:-default}` и `%(program_name)s` — остаётся как
-написано.
+`{image}`, а также:
+
+- `{local:<слаг>}` — `127.0.0.1:<порт>` другого запечённого сервиса, тот порт, который
+  ему достался после распределения. Пример: `fastcgi_pass {local:app_php};` у nginx.
+  Литерал `127.0.0.1:9000` перестал бы указывать на php-fpm, как только порт сдвинула
+  коллизия или `services.<слаг>.ports`. Слаг, которого нет в бандле, — ошибка генерации.
+- `{param.ИМЯ}` — значение из `params:` рецепта (см. ниже).
+
+Всё остальное — включая `${VAR:-default}` и `%(program_name)s` — остаётся как написано.
+
+### `params:` — настройки рецепта
+
+Рецепт может вынести изменяемые значения в `params:` с умолчаниями. Тогда наследник меняет
+одно значение, а не переписывает шаги, где оно используется. Встроенный `php-fpm` так
+задаёт pool:
+
+```yaml
+params:
+  fpm_user: www-data        # от кого работает pool
+  fpm_group: www-data
+  clear_env: "no"           # иначе код не видит окружение контейнера
+  pm_max_children: 10
+```
+
+`www-data` — как в официальном образе `php`. Если состояние лежит в томах, нужен root:
+каталоги томов Docker создаёт от root, и `www-data` в них не пишет.
+
+```yaml
+recipes:
+  php:
+    extends: php-fpm
+    +params: {fpm_user: root, fpm_group: root}
+    +post_copy:                 # именно +: post_copy без плюса снимет pool родителя
+      - "cd /var/www/html && composer install --no-dev --no-interaction"
+```
+
+Ссылка на необъявленный параметр (`{param.fpm_usr}`) — ошибка загрузки рецепта, а не
+строка, которая доедет до конфига как есть.
 
 | Секция | Когда выполняется |
 |---|---|
@@ -785,7 +851,7 @@ recipes:
 | `install: {...}` | заменяет родительский целиком |
 | `+install: {debian: [...]}` | дописывает по семействам |
 | `+copy`, `+post_copy`, `+pre_init`, `+post_init`, `+supervisor`, `+readiness`, `+run` | дописывает в конец |
-| `+match`, `+mount_kinds` | сливает по ключам |
+| `+match`, `+mount_kinds`, `+params` | сливает по ключам |
 | `pre_init: []` | явно очищает |
 
 Порядок рецептов внутри слоя роли не играет. Цикл `extends:` и ссылка на несуществующее
@@ -838,6 +904,7 @@ recipes:
 |---|---|---|
 | два сервиса на одном порту | первый оставляет порт, второй переезжает в `port_range`, конфиг переписывается механизмом из рецепта | `services.<слаг>.ports: {80: 8080}` |
 | порт у сервиса, чей рецепт не умеет его двигать | **ошибка** | пришпилить порт вручную или убрать один из сервисов |
+| порт, не опубликованный в исходном compose | не публикуется на хосте | `services.<слаг>.publish: {9000: "127.0.0.1:9100"}`, а `none` снимает публикацию |
 | одна переменная, разные значения | **ошибка** | `env:` — `prefix`, `keep:<слаг>`, `value:<литерал>`, `per_service` |
 | два разных сервиса на один слаг | **ошибка** | `sources[].prefix` |
 | две метки с одним ключом | берётся первая, выдаётся предупреждение | `labels:` в конфигурации |
@@ -1030,7 +1097,9 @@ dockerbundle restart shop-bundle nginx
 dockerbundle logs    shop-bundle php-fpm
 ```
 
-Путь к конфигурации — `--config` / `-c`. Подробности по внутреннему устройству,
+Путь к конфигурации — `--config` / `-c`. `scan` и `generate` принимают
+`--env-from-dotenv`: читать `.env` пакетов вместо `.env.example` (см.
+[.env.example](#envexample)). Подробности по внутреннему устройству,
 разработке и CI — в [`docs/README.md`](docs/README.md).
 
 ## Лицензия

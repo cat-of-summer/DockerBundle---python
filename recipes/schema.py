@@ -20,6 +20,7 @@ line: **a plain key replaces, a ``+key`` appends**.
 from __future__ import annotations
 
 import fnmatch
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -39,6 +40,10 @@ PORT_MECHANISMS = ("nginx_conf", "fpm_pool", "cli_flag", "env_var", "replace", "
 #: phase; ``skip`` ignores it, for scripts that never return because they end by exec'ing
 #: the server the recipe already starts as a supervisord program.
 ENTRYPOINT_MODES = ("auto", "skip")
+
+#: ``{param.NAME}`` inside any recipe string.
+PARAM_REF = re.compile(r"\{param\.([A-Za-z_][A-Za-z0-9_]*)\}")
+_PARAM_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 #: Values allowed in a recipe's ``mount_kinds``. Besides the real kinds, ``skip`` drops
 #: a mount outright — used for files the bundle replaces with its own, such as a
@@ -265,6 +270,13 @@ class Recipe:
     """Runtime key. Services sharing a key collapse onto one set of programs."""
 
     shared_install_once: bool = True
+    params: dict[str, str] = field(default_factory=dict)
+    """Named values the recipe's strings use as ``{param.NAME}``.
+
+    The recipe declares them with defaults; a recipe that extends it changes them with
+    ``+params:`` instead of copying every step that uses them.
+    """
+
     source: str = ""
     """Where the recipe was loaded from; not part of its identity."""
 
@@ -670,6 +682,9 @@ def from_dict(raw: Any, *, source: str = "") -> Recipe:
             f"got {raw.get('entrypoint')!r}"
         )
 
+    params = _params(raw.get("params"), f"{where}.params")
+    _check_params(raw, params, where)
+
     return Recipe(
         name=name,
         match=RecipeMatch(
@@ -697,9 +712,59 @@ def from_dict(raw: Any, *, source: str = "") -> Recipe:
         post_init=_steps(raw.get("post_init"), f"{where}.post_init"),
         mount_kinds={str(k): str(v) for k, v in (raw.get("mount_kinds") or {}).items()},
         shared=str(raw.get("shared", "")),
+        params=params,
         source=source,
         extends=str(raw.get("extends", "") or ""),
     )
+
+
+def _params(value: Any, where: str) -> dict[str, str]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise RecipeError(f"{where} must be a mapping of name -> value")
+    params: dict[str, str] = {}
+    for name, item in value.items():
+        if not _PARAM_NAME.fullmatch(str(name)):
+            raise RecipeError(f"{where}.{name}: a name is letters, digits and _")
+        if isinstance(item, (dict, list)):
+            raise RecipeError(f"{where}.{name}: expected a single value")
+        # YAML turns a bare `no` into False; the configs these land in want the word.
+        params[str(name)] = ("true" if item else "false") if isinstance(item, bool) else str(item)
+    return params
+
+
+def _strings(value: Any) -> list[str]:
+    """Every string anywhere inside a raw recipe value."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [text for item in value.values() for text in _strings(item)]
+    if isinstance(value, list):
+        return [text for item in value for text in _strings(item)]
+    return []
+
+
+def _check_params(raw: dict[str, Any], params: dict[str, str], where: str) -> None:
+    """Reject ``{param.NAME}`` for a name the recipe never declares.
+
+    Left alone it would reach a config file verbatim — ``user = {param.fpm_usr}`` — and
+    fail only once the image runs, far from the typo that caused it.
+    """
+    body = {key: value for key, value in raw.items() if key != "params"}
+    missing = sorted(
+        {
+            match.group(1)
+            for text in _strings(body)
+            for match in PARAM_REF.finditer(text)
+            if match.group(1) not in params
+        }
+    )
+    if missing:
+        raise RecipeError(
+            f"{where}: uses {', '.join('{param.' + name + '}' for name in missing)} but "
+            f"declares no such params"
+        )
 
 
 # ---------------------------------------------------------------------------

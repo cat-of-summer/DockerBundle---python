@@ -262,3 +262,35 @@ def test_path_and_env_can_claim_a_service_nothing_else_identifies():
     )
     assert scored == 15
     assert match.score(image="", files=set(), command="", service="web") == 0
+
+
+# -- params -------------------------------------------------------------------
+
+
+def test_params_override_only_what_the_child_names(tmp_path):
+    manifest = Manifest(
+        name="stand",
+        path=tmp_path / CONFIG,
+        recipes={"php": {"extends": "php-fpm", "+params": {"fpm_user": "root"}}},
+    )
+    php = Registry.load(manifest).get("php")
+    assert php.params["fpm_user"] == "root"
+    # The rest still comes from the built-in recipe.
+    assert php.params["fpm_group"] == "www-data"
+    assert php.params["clear_env"] == "no"
+
+
+def test_a_bare_yaml_boolean_param_becomes_a_word():
+    recipe = schema.from_dict({"name": "x", "params": {"flag": False}})
+    assert recipe.params == {"flag": "false"}
+
+
+def test_an_undeclared_param_is_rejected_at_load():
+    with pytest.raises(schema.RecipeError, match=r"\{param\.fpm_usr\}"):
+        schema.from_dict(
+            {
+                "name": "x",
+                "params": {"fpm_user": "root"},
+                "post_copy": ["echo user = {param.fpm_usr}"],
+            }
+        )

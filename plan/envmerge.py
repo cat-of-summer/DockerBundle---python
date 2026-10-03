@@ -19,19 +19,12 @@ nothing downstream.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 
 from core.manifest import EnvRule
 from core.model import EnvVar, ServiceSpec
 from discover.interpolate import referenced_names
-
-#: ``{local:<slug>}`` inside a ``value:`` literal, expanded to ``127.0.0.1:<port>``.
-_LOCAL_REF = re.compile(r"\{local:([A-Za-z0-9_.-]+)\}")
-
-#: Every service in the bundle shares one network namespace, so the way to reach another
-#: one is the loopback address and the port it was actually assigned.
-LOCAL_HOST = "127.0.0.1"
+from plan.substitute import SubstitutionError, expand_local
 
 
 @dataclass
@@ -76,25 +69,12 @@ def _collect(specs: list[ServiceSpec]) -> dict[str, dict[str, EnvVar]]:
 
 
 def _expand_local(text: str, ports: dict[str, int], where: str, errors: list[str]) -> str:
-    """Replace ``{local:<slug>}`` with the address that service ended up on.
-
-    Written out rather than pinned by hand because the port is not the author's to know:
-    two services wanting ``:80`` inside one bundle means one of them is moved, and a
-    literal written before that happened points at nothing.
-    """
-
-    def replace(match: re.Match[str]) -> str:
-        slug = match.group(1)
-        port = ports.get(slug)
-        if port is None:
-            errors.append(
-                f"{where}: local:{slug} names a service that is not baked into this "
-                f"bundle, so it has no port here"
-            )
-            return match.group(0)
-        return f"{LOCAL_HOST}:{port}"
-
-    return _LOCAL_REF.sub(replace, text)
+    """Replace ``{local:<slug>}`` in a ``value:`` literal, reporting what does not resolve."""
+    try:
+        return expand_local(text, ports)
+    except SubstitutionError as exc:
+        errors.append(f"{where}: {exc}")
+        return text
 
 
 def _literal(rule: str, ports: dict[str, int], where: str, errors: list[str]) -> str:

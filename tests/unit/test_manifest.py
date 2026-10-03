@@ -240,3 +240,24 @@ def test_features_round_trip(tmp_path):
     manifest = Manifest.from_dict({"features": {"gpu": False, "mysql": True}})
     reloaded = Manifest.load(manifest.save(tmp_path / NAME))
     assert reloaded.features == {"gpu": False, "mysql": True}
+
+
+def test_publish_accepts_a_spec_or_none(tmp_path):
+    path = tmp_path / NAME
+    path.write_text(
+        "version: 2\nname: x\nservices:\n"
+        "  php: {publish: {9000: none}}\n"
+        "  web: {publish: {80: '127.0.0.1:8081'}}\n"
+        "  quiet: {publish: {80: no}}\n",
+        encoding="utf-8",
+    )
+    manifest = Manifest.load(path)
+    assert manifest.services["php"].publish == {9000: "none"}
+    assert manifest.services["web"].publish == {80: "127.0.0.1:8081"}
+    # YAML reads a bare `no` as false; it means what `none` says.
+    assert manifest.services["quiet"].publish == {80: "none"}
+
+
+def test_publish_must_name_ports():
+    with pytest.raises(ManifestError, match="not a port"):
+        ServiceEntry.from_dict("php", {"publish": {"http": "none"}})

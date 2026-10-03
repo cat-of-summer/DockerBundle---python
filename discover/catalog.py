@@ -61,11 +61,12 @@ def find_packages(root: Path) -> list[PackageDir]:
     return packages
 
 
-def load(root: Path) -> tuple[list[ServiceSpec], list[str]]:
+def load(root: Path, *, dotenv: bool = False) -> tuple[list[ServiceSpec], list[str]]:
     """Load every package under ``root``.
 
     Returns the services alongside human-readable warnings; one malformed package must
-    not stop the rest of a 23-package catalogue from being usable.
+    not stop the rest of a 23-package catalogue from being usable. ``dotenv`` lets each
+    package's ``.env`` stand in for its ``.env.example``.
     """
     specs: list[ServiceSpec] = []
     warnings: list[str] = []
@@ -78,6 +79,8 @@ def load(root: Path) -> tuple[list[ServiceSpec], list[str]]:
                     package=package.name,
                     slug_base=package.slug_base,
                     origin=Origin.CATALOG,
+                    dotenv=dotenv,
+                    warnings=warnings,
                 )
             )
         except composefile.ComposeError as exc:

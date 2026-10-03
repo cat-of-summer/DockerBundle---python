@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from core.model import (
     BundlePlan,
+    EnvVar,
     Origin,
     PlannedService,
     PortSpec,
@@ -140,6 +141,39 @@ def test_published_port_falls_back_when_entries_cannot_be_paired():
     service.spec.raw_ports = ["${A}", "${B}"]
     plan.baked = [service]
     assert writer._published(plan) == ["127.0.0.1:8080:80"]
+
+
+def test_port_the_source_never_published_stays_private():
+    # php-fpm's 9000 is reached by nginx over loopback inside the container. Publishing
+    # it anyway makes two bundles on one host fight over the same host port.
+    plan = BundlePlan(name="b")
+    plan.baked = [_service("php", ports=[(9000, 9000)]), _service("moved", ports=[(9000, 20000)])]
+    assert writer._published(plan) == []
+
+
+def test_publish_none_drops_a_published_port():
+    plan = BundlePlan(name="b")
+    service = _service(
+        "nginx", ports=[(80, 80)], raw_ports=["${EXTERNAL_ACCESS}"], published="127.0.0.1:8080"
+    )
+    service.publish = {80: "none"}
+    plan.baked = [service]
+    assert writer._published(plan) == []
+
+
+def test_publish_spec_targets_the_port_the_service_ended_up_on():
+    plan = BundlePlan(name="b")
+    service = _service("php", ports=[(9000, 20001)])
+    service.publish = {9000: "127.0.0.1:9100"}
+    plan.baked = [service]
+    assert writer._published(plan) == ["127.0.0.1:9100:20001"]
+
+
+def test_instance_keeps_the_packages_value_or_falls_back_to_the_bundle_name():
+    plan = BundlePlan(name="cryptodb")
+    assert writer._instance(plan) == "_cryptodb"
+    plan.env = [EnvVar(key="INSTANCE", value="_crypto", source="global")]
+    assert writer._instance(plan) == "_crypto"
 
 
 def test_shm_size_is_carried_over():

@@ -221,3 +221,53 @@ def test_local_pointing_outside_the_bundle_blocks_generation(catalog, registry):
             ALL,
             env={**RESOLVED, "MYSQL_VERSION": EnvRule(rule="local:ghost")},
         )
+
+
+# -- recipe strings and publish -------------------------------------------------
+
+
+def _with_recipe(catalog, slugs, recipes, **kwargs):
+    from recipes.match import Registry
+
+    manifest = Manifest(
+        name="test",
+        env=dict(RESOLVED),
+        services={slug: ServiceEntry(slug=slug) for slug in slugs},
+        recipes=recipes,
+        **kwargs,
+    )
+    manifest.services["laravel_nginx_nginx"].recipe = "web"
+    return builder.build(specs_for(catalog, slugs), manifest, Registry.load(manifest))
+
+
+def test_local_in_a_recipe_string_follows_a_pinned_port(catalog):
+    slugs = {"laravel_nginx_laravel", "laravel_nginx_nginx"}
+    recipes = {
+        "web": {
+            "extends": "nginx",
+            "+post_copy": ["echo fastcgi_pass {local:laravel_nginx_laravel};"],
+        }
+    }
+    plan = _with_recipe(catalog, slugs, recipes)
+    nginx = next(s for s in plan.baked if s.spec.slug == "laravel_nginx_nginx")
+    assert "echo fastcgi_pass 127.0.0.1:9000;" in nginx.build_steps
+
+
+def test_local_in_a_recipe_string_naming_no_service_blocks_generation(catalog):
+    slugs = {"laravel_nginx_laravel", "laravel_nginx_nginx"}
+    recipes = {"web": {"extends": "nginx", "+post_copy": ["echo {local:ghost}"]}}
+    with pytest.raises(PlanError, match="local:ghost"):
+        _with_recipe(catalog, slugs, recipes)
+
+
+def test_publish_naming_a_port_the_service_lacks_is_reported(catalog, registry):
+    slugs = {"laravel_nginx_laravel"}
+    services = {
+        "laravel_nginx_laravel": ServiceEntry(
+            slug="laravel_nginx_laravel", publish={9000: "none", 1234: "127.0.0.1:1"}
+        )
+    }
+    plan = plan_for(catalog, registry, slugs, services=services)
+    php = plan.baked[0]
+    assert php.publish == {9000: "none"}
+    assert any("publish names port 1234" in warning for warning in plan.warnings)

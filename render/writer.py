@@ -19,7 +19,7 @@ from pathlib import Path
 import yaml
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
-from core.model import BundlePlan, EnvVar, PlannedService
+from core.model import PUBLISH_NONE, BundlePlan, EnvVar, PlannedService
 from core.paths import LOCK_NAME, resource_dir
 from core.version import GENERATOR_VERSION, __version__
 from discover.interpolate import (
@@ -75,6 +75,17 @@ def _write(path: Path, text: str, written: Written, *, executable: bool = False)
 HEADER_KEYS = frozenset({"BUNDLE_IMAGE", "INSTANCE", "GPU_COUNT"})
 
 
+def _instance(plan: BundlePlan) -> str:
+    """The ``INSTANCE`` the header writes.
+
+    Packages name their traefik routers and containers ``nginx${INSTANCE}``, so a blank
+    value gives two bundles on one host the same router names. The packages' own value
+    is kept when one sets it; otherwise the bundle's name stands in.
+    """
+    value = next((entry.value for entry in plan.env if entry.key == "INSTANCE"), "")
+    return value or f"_{plan.name}"
+
+
 def _sections(entries: list[EnvVar]) -> dict[str, list[EnvVar]]:
     """Group merged env entries into readable sections, globals first."""
     order = ["global", "shared"]
@@ -96,8 +107,13 @@ def _sections(entries: list[EnvVar]) -> dict[str, list[EnvVar]]:
 def _published(plan: BundlePlan) -> list[str]:
     """Host publish specs for the bundle container.
 
-    A service that kept its original port keeps whatever compose published it on; a
-    service that had to move is published on its new port so it stays reachable.
+    Only what the source compose published is published. A port it never exposed to the
+    host — php-fpm's 9000, which nginx reaches over loopback inside the same container —
+    stays private; publishing it anyway makes two bundles on one host fight over it.
+    A service that had to move is published on its new port so it stays reachable.
+
+    ``publish:`` in ``docker-bundle.yml`` overrides all of that per original port: a
+    spec publishes there, ``none`` publishes nothing.
 
     Where the package published through a variable — ``ports: ["${EXTERNAL_ACCESS}"]``,
     which is how every package in this style is written — the reference is passed through
@@ -116,9 +132,16 @@ def _published(plan: BundlePlan) -> list[str]:
 
         for index, port in enumerate(service.ports):
             spec = ""
-            if paired and not port.remapped and "$" in paired[index]:
+            override = service.publish.get(port.original)
+            if override is not None:
+                if override == PUBLISH_NONE:
+                    continue
+                spec = f"{override}:{port.container}"
+            elif paired and not port.remapped and "$" in paired[index]:
                 spec = rename_variables(paired[index], renames)
-            elif port.remapped or not port.published:
+            elif not port.published:
+                continue
+            elif port.remapped:
                 spec = f"127.0.0.1:{port.container}:{port.container}"
             else:
                 spec = f"{port.published}:{port.container}"
@@ -444,6 +467,7 @@ def render(
             **common,
             sections=_sections(plan.env),
             replica_vars=_replica_vars(plan),
+            instance=_instance(plan),
         ),
         written,
     )

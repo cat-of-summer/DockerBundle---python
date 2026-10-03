@@ -31,7 +31,11 @@ class Context:
 
 
 def load(
-    manifest: Manifest, *, pull: bool = False, features: dict[str, bool] | None = None
+    manifest: Manifest,
+    *,
+    pull: bool = False,
+    features: dict[str, bool] | None = None,
+    dotenv: bool = False,
 ) -> Context:
     """Discover candidates for a configuration and work out which ones it selects.
 
@@ -44,9 +48,14 @@ def load(
     active = dict(features if features is not None else manifest.features)
 
     registry = Registry.load(manifest)
-    discovery = resolve.collect(manifest.active_sources(active), root, pull=pull)
+    discovery = resolve.collect(manifest.active_sources(active), root, pull=pull, dotenv=dotenv)
 
     warnings = [*registry.warnings, *discovery.warnings]
+    if dotenv:
+        warnings.append(
+            "--env-from-dotenv: values from each package's .env go into the generated "
+            ".env.example; check it for passwords and tokens before shipping it"
+        )
     warnings.extend(resolve.enrich(discovery.services, pull=pull))
 
     known = {spec.slug for spec in discovery.services}

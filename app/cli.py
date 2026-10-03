@@ -33,6 +33,11 @@ errors = Console(stderr=True)
 EXIT_BLOCKED = 2
 EXIT_USAGE = 3
 
+DOTENV_HELP = (
+    "Read each package's .env instead of its .env.example. Its values, passwords "
+    "included, end up in the generated .env.example."
+)
+
 
 def _manifest_path(explicit: Path | None) -> Path:
     return explicit if explicit else Path.cwd() / MANIFEST_NAME
@@ -59,12 +64,12 @@ def _features(manifest: Manifest, enable: list[str], disable: list[str]) -> dict
         raise typer.Exit(EXIT_USAGE) from exc
 
 
-def _context(manifest: Manifest, *, pull: bool, features: dict[str, bool]):
+def _context(manifest: Manifest, *, pull: bool, features: dict[str, bool], dotenv: bool = False):
     """Run discovery, turning configuration problems into a usable exit code."""
     from app import pipeline
 
     try:
-        return pipeline.load(manifest, pull=pull, features=features)
+        return pipeline.load(manifest, pull=pull, features=features, dotenv=dotenv)
     except (ManifestError, RecipeError) as exc:
         errors.print(f"[red]{exc}[/red]")
         raise typer.Exit(EXIT_USAGE) from exc
@@ -151,6 +156,7 @@ def scan(
     enable: list[str] = typer.Option([], "--enable", help="Turn a feature on. Repeatable."),
     disable: list[str] = typer.Option([], "--disable", help="Turn a feature off. Repeatable."),
     pull: bool = typer.Option(False, "--pull", help="Pull images that are missing locally."),
+    env_from_dotenv: bool = typer.Option(False, "--env-from-dotenv", help=DOTENV_HELP),
 ) -> None:
     """List the services the configured sources provide, and the recipe each matches."""
     from core.manifest import SourceRef
@@ -168,7 +174,7 @@ def scan(
         manifest = _load_manifest(_manifest_path(path))
 
     features = _features(manifest, enable, disable)
-    context = _context(manifest, pull=pull, features=features)
+    context = _context(manifest, pull=pull, features=features, dotenv=env_from_dotenv)
 
     table = Table(title=t("cli.scan_title", count=len(context.discovery.services)))
     table.add_column(t("cli.col_service"), style="cyan", no_wrap=True)
@@ -237,6 +243,7 @@ def generate(
     enable: list[str] = typer.Option([], "--enable", help="Turn a feature on. Repeatable."),
     disable: list[str] = typer.Option([], "--disable", help="Turn a feature off. Repeatable."),
     pull: bool = typer.Option(False, "--pull", help="Pull images that are missing locally."),
+    env_from_dotenv: bool = typer.Option(False, "--env-from-dotenv", help=DOTENV_HELP),
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Non-interactive: fail instead of asking anything."
     ),
@@ -246,7 +253,7 @@ def generate(
 
     manifest = _load_manifest(_manifest_path(path))
     features = _features(manifest, enable, disable)
-    context = _context(manifest, pull=pull, features=features)
+    context = _context(manifest, pull=pull, features=features, dotenv=env_from_dotenv)
     pipeline.ensure_entries(context)
 
     if not context.selected:

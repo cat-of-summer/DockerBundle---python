@@ -90,8 +90,8 @@ def load(path: Path, *, source: str = "") -> EnvFile:
 def load_optional(directory: Path, *names: str, source: str = "") -> EnvFile:
     """Load the first of ``names`` that exists in ``directory``.
 
-    Packages ship ``.env.example``; a configured deployment also has ``.env``, which
-    wins because it holds the values actually in use.
+    The order of ``names`` is the preference: the caller decides whether a configured
+    ``.env`` may stand in for the package's ``.env.example``.
     """
     for name in names:
         candidate = directory / name
