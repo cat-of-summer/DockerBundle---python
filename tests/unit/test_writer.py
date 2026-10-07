@@ -356,12 +356,13 @@ def _bind_dist(tmp_path, *, is_file=False):
     seed = tmp_path / "seed"
     if is_file:
         seed = tmp_path / "hosts.json"
-        seed.write_text("[]\r\n")
+        # Bytes, not text: in text mode Windows would turn \n into \r\n once more.
+        seed.write_bytes(b"[]\r\n")
         bind = PlannedBind(name="hosts", target="/etc/app/hosts.json", host="./hosts.json",
                            source=seed, is_file=True)
     else:
         (seed / "nested").mkdir(parents=True)
-        (seed / "properties.json").write_text("{}\r\n")
+        (seed / "properties.json").write_bytes(b"{}\r\n")
         (seed / "nested" / "extra.txt").write_text("x")
         bind = PlannedBind(name="config", target="/etc/app", host="./config", source=seed)
     plan = BundlePlan(name="stand", binds=[bind])
@@ -402,7 +403,7 @@ def test_a_file_bind_refuses_to_create_the_host_path(tmp_path):
         "target": "/etc/app/hosts.json",
         "bind": {"create_host_path": False},
     }
-    assert (output / "hosts.json").read_text() == "[]\n"
+    assert (output / "hosts.json").read_bytes() == b"[]\n"
 
 
 def test_reshipping_drops_files_removed_from_the_source(tmp_path):
