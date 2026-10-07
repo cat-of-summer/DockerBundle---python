@@ -9,7 +9,7 @@ container in sight.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from core.manifest import Manifest
 from core.model import (
@@ -18,6 +18,7 @@ from core.model import (
     MountKind,
     MountMode,
     Origin,
+    PlannedBind,
     PlannedService,
     PortSpec,
     ReadinessProbe,
@@ -613,6 +614,7 @@ def build(
             )
             continue
         plan.named_volumes[name] = target
+    plan.binds = _binds(manifest, features, plan, problems, warnings)
 
     if problems:
         raise PlanError(problems)
@@ -651,3 +653,61 @@ def _volume_name(slug: str, mount) -> str:
     leaf = mount.target.rstrip("/").rsplit("/", 1)[-1] or "data"
     # `/var/lib/mysql` for the `mysql` service would otherwise become `mysql_mysql`.
     return f"{slug}_data" if leaf == slug else f"{slug}_{leaf}"
+
+
+def _overlaps(a: str, b: str) -> bool:
+    left, right = PurePosixPath(a), PurePosixPath(b)
+    return left == right or left in right.parents or right in left.parents
+
+
+def _binds(
+    manifest: Manifest,
+    features: dict[str, bool],
+    plan: BundlePlan,
+    problems: list[str],
+    warnings: list[str],
+) -> list[PlannedBind]:
+    """Turn ``binds:`` into mounts, checked against what the services already mount.
+
+    The manifest itself refuses overlaps among its own entries; the volumes a service's
+    compose file declared are only known here.
+    """
+    planned: list[PlannedBind] = []
+    env_keys = {entry.key for entry in plan.env}
+    for name, bind in manifest.active_binds(features).items():
+        for volume, target in plan.named_volumes.items():
+            if _overlaps(bind.path, target):
+                problems.append(
+                    f"binds.{name}: {bind.path} overlaps volume {volume} at {target}; "
+                    f"one of them would hide the other"
+                )
+        source = None
+        if bind.ship:
+            source = manifest.resolve(bind.ship)
+            if not source.exists():
+                problems.append(f"binds.{name}: ship {bind.ship} does not exist ({source})")
+                continue
+        # A bind hides whatever the image has at that path. Baking it as well is not an
+        # error, just wasted layers and a trap: edits to the baked copy never show.
+        for service in plan.baked:
+            for copy in service.copies:
+                if _overlaps(bind.path, copy.target):
+                    warnings.append(
+                        f"binds.{name}: {copy.target} is baked by {service.spec.slug} but "
+                        f"the bind at {bind.path} hides it in the container"
+                    )
+        item = PlannedBind(
+            name=name,
+            target=bind.path,
+            host=bind.host,
+            source=source,
+            is_file=bool(source and source.is_file()),
+        )
+        if item.env in env_keys:
+            problems.append(
+                f"binds.{name}: {item.env} is already a key of a service's .env; "
+                f"rename the bind"
+            )
+            continue
+        planned.append(item)
+    return planned

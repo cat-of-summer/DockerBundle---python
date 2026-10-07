@@ -218,3 +218,53 @@ def test_post_init_only_service_still_defers(catalog, registry):
     nginx = next(p for p in plan.programs if p.name == "nginx")
     assert not nginx.autostart
     assert "nginx" in plan.deferred
+
+
+# -- binds ------------------------------------------------------------------
+
+
+def _bind_plan(catalog, registry, tmp_path, binds):
+    return plan_for(
+        catalog, registry, ALL, **RESOLVED,
+        binds=Manifest.from_dict({"binds": binds}).binds,
+        path=tmp_path / "docker-bundle.yml",
+    )
+
+
+def test_a_shipped_directory_becomes_a_directory_bind(catalog, registry, tmp_path):
+    (tmp_path / "seed").mkdir()
+    (tmp_path / "seed" / "dictionary.json").write_text("{}")
+
+    plan = _bind_plan(catalog, registry, tmp_path, {"config": {"path": "/etc/app", "ship": "seed"}})
+
+    [bind] = plan.binds
+    assert (bind.target, bind.host, bind.env) == ("/etc/app", "./config", "CONFIG_DIR")
+    assert not bind.is_file
+    assert bind.source == (tmp_path / "seed").resolve()
+
+
+def test_a_shipped_file_becomes_a_file_bind(catalog, registry, tmp_path):
+    (tmp_path / "hosts.json").write_text("[]")
+
+    plan = _bind_plan(
+        catalog, registry, tmp_path,
+        {"hosts": {"path": "/etc/app/hosts.json", "host": "./hosts.json", "ship": "hosts.json"}},
+    )
+
+    assert plan.binds[0].is_file
+    assert plan.binds[0].env == "HOSTS_FILE"
+
+
+def test_a_missing_ship_blocks_generation(catalog, registry, tmp_path):
+    with pytest.raises(PlanError, match="does not exist"):
+        _bind_plan(catalog, registry, tmp_path, {"config": {"path": "/etc/app", "ship": "nope"}})
+
+
+def test_a_bind_over_a_service_volume_blocks_generation(catalog, registry, tmp_path):
+    with pytest.raises(PlanError, match="overlaps volume mysql_data"):
+        _bind_plan(catalog, registry, tmp_path, {"mysql": "/var/lib/mysql"})
+
+
+def test_a_bind_over_baked_code_warns(catalog, registry, tmp_path):
+    plan = _bind_plan(catalog, registry, tmp_path, {"code": "/var/www/laravel_nginx_laravel"})
+    assert any("binds.code" in w and "hides it" in w for w in plan.warnings)

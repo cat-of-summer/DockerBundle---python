@@ -364,6 +364,27 @@ def stage_context(plan: BundlePlan, context: Path, written: Written) -> None:
                executable=True)
 
 
+def ship_binds(plan: BundlePlan, output: Path, written: Written) -> None:
+    """Put each bind's starting content at ``dist/<host>``, where compose will mount it.
+
+    Replaced wholesale, like ``context/``: a file dropped from the source must not live on
+    in ``dist/`` and from there in the next release.
+    """
+    for bind in plan.binds:
+        if bind.source is None:
+            continue
+        destination = output / bind.host
+        if destination.is_dir():
+            shutil.rmtree(destination)
+        elif destination.exists():
+            destination.unlink()
+        _stage_tree(bind.source, destination)
+        if destination.is_dir():
+            written.files.extend(sorted(p for p in destination.rglob("*") if p.is_file()))
+        else:
+            written.files.append(destination)
+
+
 def render(
     plan: BundlePlan,
     output: Path,
@@ -473,6 +494,7 @@ def render(
     )
 
     _write(output / ".dockerignore", "context/**/.git\n**/__pycache__\n**/node_modules\n", written)
+    ship_binds(plan, output, written)
     _write(
         output / LOCK_NAME,
         _lock(plan, variant, image_ref, context_digest, required_env),
@@ -523,6 +545,10 @@ def _lock(
         "sidecars": sorted(s.spec.slug for s in plan.sidecars),
         "external": sorted(spec.slug for spec in plan.external),
         "volumes": dict(sorted(plan.named_volumes.items())),
+        "binds": {
+            bind.name: {"path": bind.target, "host": bind.host, "env": bind.env}
+            for bind in plan.binds
+        },
         "env_renames": {k: dict(sorted(v.items())) for k, v in sorted(plan.env_renames.items())},
         # The environment contract of the image built from this dist/. The same list is
         # stamped on the image as a label, so a deployment can tell whether the .env it
@@ -530,6 +556,9 @@ def _lock(
         "required_env": list(required_env),
         "context_digest": context_digest,
     }
+    if not plan.binds:
+        # Absent rather than empty: a bundle without binds keeps the lock it always had.
+        del payload["binds"]
     return yaml.safe_dump(payload, sort_keys=False, allow_unicode=True, default_flow_style=False)
 
 

@@ -261,3 +261,70 @@ def test_publish_accepts_a_spec_or_none(tmp_path):
 def test_publish_must_name_ports():
     with pytest.raises(ManifestError, match="not a port"):
         ServiceEntry.from_dict("php", {"publish": {"http": "none"}})
+
+
+# -- binds ------------------------------------------------------------------
+
+
+def test_binds_round_trip_with_the_default_host(tmp_path):
+    manifest = Manifest.from_dict(
+        {"binds": {"config": {"path": "/var/www/html/config", "ship": "app/config"}}}
+    )
+    reloaded = Manifest.load(manifest.save(tmp_path / NAME))
+    bind = reloaded.active_binds({})["config"]
+
+    assert (bind.path, bind.host, bind.ship) == ("/var/www/html/config", "./config", "app/config")
+    # The default host is not written back: the file stays as short as it was.
+    assert "host" not in yaml.safe_load((tmp_path / NAME).read_text())["binds"]["config"]
+
+
+def test_a_bare_string_bind_is_its_container_path():
+    bind = Manifest.from_dict({"binds": {"hosts": "/etc/app/hosts"}}).binds["hosts"]
+    assert (bind.path, bind.host) == ("/etc/app/hosts", "./hosts")
+
+
+@pytest.mark.parametrize(
+    ("entry", "message"),
+    [
+        ({"path": "relative/config"}, "absolute"),
+        ({"path": "/config", "host": "/srv/config"}, "inside the deployment"),
+        ({"path": "/config", "host": "../config"}, "inside the deployment"),
+        ({"path": "/config", "host": "./"}, "inside the deployment"),
+        ({"path": "/config", "host": "./context/config"}, "generator writes"),
+        ({"path": "/config", "copy": "x"}, "unknown key"),
+    ],
+)
+def test_bad_binds_are_refused(entry, message):
+    with pytest.raises(ManifestError, match=message):
+        Manifest.from_dict({"binds": {"config": entry}})
+
+
+def test_a_bind_name_must_make_an_environment_variable():
+    with pytest.raises(ManifestError, match="environment variable"):
+        Manifest.from_dict({"binds": {"My-Config": "/config"}})
+
+
+def test_a_bind_over_a_volume_is_refused():
+    # Docker would let the later mount win, and the volume's data would silently vanish.
+    with pytest.raises(ManifestError, match="overlaps"):
+        Manifest.from_dict(
+            {
+                "volumes": {"db": "/var/www/html/storage"},
+                "binds": {"cfg": "/var/www/html/storage/cfg"},
+            }
+        )
+
+
+def test_two_binds_cannot_share_a_host_path():
+    with pytest.raises(ManifestError, match="already binds"):
+        Manifest.from_dict(
+            {"binds": {"a": {"path": "/a", "host": "./x"}, "b": {"path": "/b", "host": "./x"}}}
+        )
+
+
+def test_features_gate_binds():
+    manifest = Manifest.from_dict(
+        {"features": {"edit": False}, "binds": {"config": {"path": "/config", "when": "edit"}}}
+    )
+    assert manifest.active_binds({"edit": False}) == {}
+    assert set(manifest.active_binds({"edit": True})) == {"config"}

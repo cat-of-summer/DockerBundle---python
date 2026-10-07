@@ -391,6 +391,29 @@ class PlannedService:
 
 
 @dataclass
+class PlannedBind:
+    """A host path the deployment mounts into the bundle container."""
+
+    name: str
+    target: str
+    """Absolute path inside the container."""
+
+    host: str
+    """Default host path, relative to the compose file, e.g. ``./config``."""
+
+    source: Path | None = None
+    """What the generator copies into ``dist/<host>``; ``None`` ships nothing."""
+
+    is_file: bool = False
+    """Bind a single file rather than a directory."""
+
+    @property
+    def env(self) -> str:
+        """The ``.env`` key that moves the host path, e.g. ``CONFIG_DIR``."""
+        return f"{self.name.upper()}_{'FILE' if self.is_file else 'DIR'}"
+
+
+@dataclass
 class BundlePlan:
     """Everything the renderer needs. Produced by :mod:`plan.builder`."""
 
@@ -411,6 +434,9 @@ class BundlePlan:
     env: list[EnvVar] = field(default_factory=list)
     named_volumes: dict[str, str] = field(default_factory=dict)
     """Volume name -> mount target inside the bundle container."""
+
+    binds: list[PlannedBind] = field(default_factory=list)
+    """Host paths mounted into the bundle container, in configuration order."""
 
     network: str = "network"
     network_external: bool = True

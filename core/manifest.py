@@ -12,8 +12,9 @@ resolve what they disagree about, and stays silent where they already agree.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import yaml
@@ -52,6 +53,93 @@ def _when(raw: Any, where: str) -> list[str]:
         return features_mod.normalise(raw, where=where)
     except features_mod.FeatureError as exc:
         raise ManifestError(str(exc)) from exc
+
+
+#: A bind's name becomes an environment variable, so it has to survive being upper-cased.
+_BIND_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
+
+#: Names ``dist/`` already uses. A bind shipped onto one of them would be overwritten by the
+#: generator, or overwrite what the generator wrote.
+RESERVED_DIST_NAMES = frozenset({
+    "context", "Dockerfile", "docker-compose.yml", ".env", ".env.example", ".dockerignore",
+    "entrypoint.sh", "healthcheck.sh", "supervisord.conf", "docker-bundle.lock.yml",
+})
+
+
+@dataclass
+class Bind:
+    """A part of the container the deployment keeps on its own disk, next to the compose file.
+
+    A named volume hides its content inside Docker; a bind is for what a person is meant to
+    open and edit on the server — a dictionary, a list of hosts, a template. ``ship`` is
+    what the generator puts into ``dist/<host>`` as the starting content, so the release
+    carries it and an unpacked ``dist/`` runs as is.
+    """
+
+    path: str
+    """Absolute path inside the bundle container."""
+
+    host: str = ""
+    """Path next to the generated compose file. Defaults to ``./<name>``."""
+
+    ship: str = ""
+    """File or directory, relative to ``docker-bundle.yml``, copied into ``dist/<host>``."""
+
+    when: list[str] = field(default_factory=list)
+
+    def to_dict(self, name: str) -> Any:
+        data: dict[str, Any] = {"path": self.path}
+        if self.host and self.host != default_bind_host(name):
+            data["host"] = self.host
+        if self.ship:
+            data["ship"] = self.ship
+        if self.when:
+            data["when"] = list(self.when)
+        return data
+
+    @classmethod
+    def from_dict(cls, name: str, raw: Any) -> Bind:
+        where = f"binds.{name}"
+        if not _BIND_NAME.match(name):
+            raise ManifestError(
+                f"{where}: the name becomes an environment variable; use lowercase "
+                f"letters, digits and _"
+            )
+        if isinstance(raw, str):
+            raw = {"path": raw}
+        if not isinstance(raw, dict):
+            raise ManifestError(f"{where}: expected a path or a mapping with path:")
+        unknown = set(raw) - {"path", "host", "ship", "when"}
+        if unknown:
+            raise ManifestError(
+                f"{where}: unknown key(s) {', '.join(sorted(unknown))}; "
+                f"expected path, host, ship or when"
+            )
+        path = str(raw.get("path") or "")
+        if not path.startswith("/"):
+            raise ManifestError(
+                f"{where}: path must be absolute inside the container, got {path!r}"
+            )
+        host = str(raw.get("host") or default_bind_host(name))
+        relative = PurePosixPath(host.replace("\\", "/"))
+        parts = [part for part in relative.parts if part != "."]
+        if relative.is_absolute() or not parts or ".." in parts:
+            raise ManifestError(
+                f"{where}: host must be a path inside the deployment directory, "
+                f"like ./{name}; got {host!r}"
+            )
+        if parts[0] in RESERVED_DIST_NAMES:
+            raise ManifestError(f"{where}: host {host!r} is a name the generator writes itself")
+        return cls(
+            path=path.rstrip("/") or "/",
+            host="./" + "/".join(parts),
+            ship=str(raw.get("ship") or ""),
+            when=_when(raw.get("when"), where),
+        )
+
+
+def default_bind_host(name: str) -> str:
+    return f"./{name}"
 
 
 @dataclass
@@ -385,6 +473,28 @@ def _refuse_retired_keys(raw: dict[str, Any], name: str) -> None:
                     )
 
 
+def _check_bind_paths(binds: dict[str, Bind], volumes: dict[str, Conditional]) -> None:
+    """Refuse two mounts of one container path, or one nested inside another.
+
+    Docker accepts both and the later mount silently wins, so a bind laid over a volume
+    would make the volume's data vanish from the container without an error anywhere.
+    """
+    taken = [(f"volumes.{name}", item.value.rstrip("/") or "/") for name, item in volumes.items()]
+    taken += [(f"binds.{name}", bind.path) for name, bind in binds.items()]
+    hosts: dict[str, str] = {}
+    for index, (where, path) in enumerate(taken):
+        for other_where, other in taken[index + 1:]:
+            a, b = PurePosixPath(path), PurePosixPath(other)
+            if a == b or a in b.parents or b in a.parents:
+                raise ManifestError(f"{other_where}: {other} overlaps {where} at {path}")
+    for name, bind in binds.items():
+        if bind.host in hosts:
+            raise ManifestError(
+                f"binds.{name}: host {bind.host} is already binds.{hosts[bind.host]}"
+            )
+        hosts[bind.host] = name
+
+
 @dataclass
 class Manifest:
     name: str = "bundle"
@@ -427,6 +537,13 @@ class Manifest:
     that lives *inside* an otherwise baked directory — generated reports and visual
     baselines under a code tree — has no mount of its own to classify, and without an
     entry here it would be lost on the next ``docker pull``.
+    """
+
+    binds: dict[str, Bind] = field(default_factory=dict)
+    """Host paths mounted into the bundle container: name -> :class:`Bind`.
+
+    For what the deployment edits by hand. Everything else that must survive the image
+    belongs in :attr:`volumes`.
     """
 
     labels: dict[str, Conditional] = field(default_factory=dict)
@@ -485,6 +602,10 @@ class Manifest:
             data["volumes"] = {
                 name: item.to_dict(value_key="path")
                 for name, item in sorted(self.volumes.items())
+            }
+        if self.binds:
+            data["binds"] = {
+                name: bind.to_dict(name) for name, bind in sorted(self.binds.items())
             }
         if self.labels:
             data["labels"] = {
@@ -582,6 +703,12 @@ class Manifest:
                 )
             volumes[str(volume)] = item
 
+        binds_raw = raw.get("binds") or {}
+        if not isinstance(binds_raw, dict):
+            raise ManifestError("binds must be a mapping of name -> path in the container")
+        binds = {str(name): Bind.from_dict(str(name), item) for name, item in binds_raw.items()}
+        _check_bind_paths(binds, volumes)
+
         labels_raw = raw.get("labels") or {}
         if not isinstance(labels_raw, dict):
             raise ManifestError("labels must be a mapping of label name -> value")
@@ -620,6 +747,7 @@ class Manifest:
             network=network_name,
             network_external=network_external,
             volumes=volumes,
+            binds=binds,
             labels=labels,
             globals=[str(g) for g in (raw.get("globals") or DEFAULT_GLOBALS)],
             env=env,
@@ -663,6 +791,9 @@ class Manifest:
         for volume, volume_item in self.volumes.items():
             for flag in features_mod.names(volume_item.when):
                 used.setdefault(flag, f"volumes.{volume}")
+        for bind_name, bind in self.binds.items():
+            for flag in features_mod.names(bind.when):
+                used.setdefault(flag, f"binds.{bind_name}")
         for label, label_item in self.labels.items():
             for flag in features_mod.names(label_item.when):
                 used.setdefault(flag, f"labels.{label}")
@@ -699,6 +830,13 @@ class Manifest:
             name: item.value
             for name, item in self.volumes.items()
             if self.holds(item.when, features, where=f"volumes.{name}")
+        }
+
+    def active_binds(self, features: dict[str, bool]) -> dict[str, Bind]:
+        return {
+            name: bind
+            for name, bind in self.binds.items()
+            if self.holds(bind.when, features, where=f"binds.{name}")
         }
 
     def active_labels(self, features: dict[str, bool]) -> dict[str, str]:

@@ -23,10 +23,22 @@ services:
       - "{{ entry }}"
 {% endfor %}
 {% endif %}
-{% if plan.named_volumes %}
+{% if plan.named_volumes or plan.binds %}
     volumes:
 {% for name, target in plan.named_volumes.items() %}
       - {{ name }}:{{ target }}
+{% endfor %}
+{% for bind in plan.binds %}
+{% if bind.is_file %}
+      # A missing file stops the start instead of turning into an empty directory.
+      - type: bind
+        source: ${{ '{' }}{{ bind.env }}:-{{ bind.host }}}
+        target: {{ bind.target }}
+        bind:
+          create_host_path: false
+{% else %}
+      - ${{ '{' }}{{ bind.env }}:-{{ bind.host }}}:{{ bind.target }}
+{% endif %}
 {% endfor %}
 {% endif %}
     networks:

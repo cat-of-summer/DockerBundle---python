@@ -345,3 +345,83 @@ def test_required_env_is_empty_without_renames():
     plan.programs = [SupervisorProgram(name="nginx", command="run")]
     plan.baked = [_service("nginx")]
     assert _required_env(plan) == []
+
+
+# -- binds ------------------------------------------------------------------
+
+
+def _bind_dist(tmp_path, *, is_file=False):
+    from core.model import PlannedBind
+
+    seed = tmp_path / "seed"
+    if is_file:
+        seed = tmp_path / "hosts.json"
+        seed.write_text("[]\r\n")
+        bind = PlannedBind(name="hosts", target="/etc/app/hosts.json", host="./hosts.json",
+                           source=seed, is_file=True)
+    else:
+        (seed / "nested").mkdir(parents=True)
+        (seed / "properties.json").write_text("{}\r\n")
+        (seed / "nested" / "extra.txt").write_text("x")
+        bind = PlannedBind(name="config", target="/etc/app", host="./config", source=seed)
+    plan = BundlePlan(name="stand", binds=[bind])
+    output = tmp_path / "dist"
+    writer.render(plan, output, image_ref="stand:test")
+    return output
+
+
+def test_a_directory_bind_is_mounted_shipped_and_locked(tmp_path):
+    import yaml
+
+    output = _bind_dist(tmp_path)
+    compose = (output / "docker-compose.yml").read_text()
+
+    assert "      - ${CONFIG_DIR:-./config}:/etc/app\n" in compose
+    assert "\nCONFIG_DIR=./config\n" in (output / ".env.example").read_text()
+    assert (output / "config" / "properties.json").read_bytes() == b"{}\n"
+    assert (output / "config" / "nested" / "extra.txt").is_file()
+    lock = yaml.safe_load((output / "docker-bundle.lock.yml").read_text())
+    assert lock["binds"] == {
+        "config": {"path": "/etc/app", "host": "./config", "env": "CONFIG_DIR"},
+    }
+
+    services = yaml.safe_load(compose)["services"]
+    assert services["stand"]["volumes"] == ["${CONFIG_DIR:-./config}:/etc/app"]
+
+
+def test_a_file_bind_refuses_to_create_the_host_path(tmp_path):
+    import yaml
+
+    output = _bind_dist(tmp_path, is_file=True)
+    compose = yaml.safe_load((output / "docker-compose.yml").read_text())
+    [mount] = compose["services"]["stand"]["volumes"]
+
+    assert mount == {
+        "type": "bind",
+        "source": "${HOSTS_FILE:-./hosts.json}",
+        "target": "/etc/app/hosts.json",
+        "bind": {"create_host_path": False},
+    }
+    assert (output / "hosts.json").read_text() == "[]\n"
+
+
+def test_reshipping_drops_files_removed_from_the_source(tmp_path):
+    from core.model import PlannedBind
+
+    output = _bind_dist(tmp_path)
+    (tmp_path / "seed" / "nested" / "extra.txt").unlink()
+    (output / "config" / "local-only.txt").write_text("stale")
+
+    bind = PlannedBind(name="config", target="/etc/app", host="./config", source=tmp_path / "seed")
+    writer.render(BundlePlan(name="stand", binds=[bind]), output, image_ref="stand:test")
+
+    assert not (output / "config" / "nested" / "extra.txt").exists()
+    assert not (output / "config" / "local-only.txt").exists()
+
+
+def test_no_binds_leaves_the_lock_without_the_key(tmp_path):
+    import yaml
+
+    output = tmp_path / "dist"
+    writer.render(BundlePlan(name="stand"), output, image_ref="stand:test")
+    assert "binds" not in yaml.safe_load((output / "docker-bundle.lock.yml").read_text())
