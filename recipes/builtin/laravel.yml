@@ -18,8 +18,8 @@ match:
 +install:
   debian:
     - php-sqlite3
-    - cron
 
+# The crontab is all it takes: the planner adds the cron daemon once it sees one baked.
 +copy:
   - src: crontab
     dest: /etc/cron.d/{slug}

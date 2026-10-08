@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import shutil
 
 import pytest
 
@@ -11,6 +12,7 @@ from core.model import MountMode
 from discover import resolve
 from plan import builder
 from plan.builder import INIT_BARRIER, PlanError
+from recipes.schema import ProgramRule
 
 
 def plan_for(catalog, registry, slugs, **manifest_kwargs):
@@ -268,3 +270,65 @@ def test_a_bind_over_a_service_volume_blocks_generation(catalog, registry, tmp_p
 def test_a_bind_over_baked_code_warns(catalog, registry, tmp_path):
     plan = _bind_plan(catalog, registry, tmp_path, {"code": "/var/www/laravel_nginx_laravel"})
     assert any("binds.code" in w and "hides it" in w for w in plan.warnings)
+
+
+# -- cron -------------------------------------------------------------------
+
+
+def _cron(plan):
+    return [program for program in plan.programs if program.name == "cron"]
+
+
+def test_a_baked_crontab_brings_the_cron_daemon(catalog, registry):
+    plan = plan_for(catalog, registry, ALL, **RESOLVED)
+
+    [cron] = _cron(plan)
+    # It runs jobs against the application, so it waits for init like the application.
+    assert not cron.autostart
+    assert plan.install["debian"].count("cron") == 1
+    laravel = next(s for s in plan.baked if s.spec.slug == "laravel_nginx_laravel")
+    assert cron in laravel.programs
+    # nginx depends on laravel, but nothing waits for cron: it must not hold nginx back.
+    nginx = next(p for p in plan.programs if p.name == "nginx")
+    assert nginx.priority < cron.priority
+
+
+def test_several_crontabs_share_one_daemon(catalog, registry):
+    shutil.copytree(catalog / "laravel-nginx", catalog / "laravel-two")
+    plan = plan_for(catalog, registry, {"laravel_nginx_laravel", "laravel_two_laravel"})
+
+    crontabs = [
+        copy.target
+        for service in plan.baked
+        for copy in service.copies
+        if copy.target.startswith("/etc/cron.d/")
+    ]
+    assert len(crontabs) == 2
+    assert len(_cron(plan)) == 1
+
+
+def test_no_crontab_no_cron(catalog, registry):
+    (catalog / "laravel-nginx" / "crontab").unlink()
+    plan = plan_for(catalog, registry, ALL, **RESOLVED)
+
+    assert not _cron(plan)
+    assert "cron" not in plan.install.get("debian", [])
+
+
+def test_a_recipe_declaring_cron_itself_keeps_its_own(catalog, registry):
+    laravel = registry.recipes["laravel"]
+    manual = ProgramRule(name="cron", command="cron -f", priority=70, scalable=False)
+    registry.recipes["laravel"] = dataclasses.replace(
+        laravel, programs=[*laravel.programs, manual]
+    )
+    plan = plan_for(catalog, registry, ALL, **RESOLVED)
+
+    assert len(_cron(plan)) == 1
+    assert any("declares program 'cron' itself" in w for w in plan.warnings)
+
+
+def test_a_crontab_bind_brings_the_cron_daemon(catalog, registry, tmp_path):
+    (catalog / "laravel-nginx" / "crontab").unlink()
+    plan = _bind_plan(catalog, registry, tmp_path, {"schedule": "/etc/cron.d"})
+
+    assert len(_cron(plan)) == 1

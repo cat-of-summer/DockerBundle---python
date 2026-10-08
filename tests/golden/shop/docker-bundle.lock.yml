@@ -1,6 +1,6 @@
 generator:
-  version: 0.3.0
-  format: 3
+  version: 0.3.1
+  format: 4
 bundle:
   name: shop
   variant: cpu
@@ -54,6 +54,11 @@ programs:
   autostart: false
   scalable: false
   critical: true
+- name: cron
+  priority: 70
+  autostart: false
+  scalable: false
+  critical: false
 baked:
 - laravel_nginx_laravel
 - laravel_nginx_nginx
@@ -84,4 +89,4 @@ required_env:
 - MYSQL_EXTERNAL_ACCESS
 - VUE_EXTERNAL_ACCESS
 - VUE_NGINX_VITE_NGINX_EXTERNAL_ACCESS
-context_digest: sha256:8b58df5d09ddcdd6b9d2bcae26de8aae544ae2af358061acb3d6e883646a947c
+context_digest: sha256:a56987fe135262a7b9aa1faa5c319235746cf53c1570d4134c0ba5cb1b87c4fe

@@ -8,7 +8,7 @@ container in sight.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 
 from core.manifest import Manifest
@@ -39,6 +39,10 @@ from recipes.schema import Recipe
 #: init has something to migrate against. Everything at or above it is an application
 #: process and is started only once initialisation has finished.
 INIT_BARRIER = 30
+
+#: Where a cron daemon reads schedules from. A file baked or bound here is what "the
+#: service declares a crontab" means, and it brings the shared cron runtime with it.
+CRON_PATHS = ("/etc/crontab", "/etc/cron.d", "/var/spool/cron")
 
 
 class PlanError(ValueError):
@@ -331,6 +335,108 @@ def _warn_shared_runtime(baked: list[Resolved], warnings: list[str]) -> None:
         )
 
 
+def _collect_packages(
+    recipe: Recipe,
+    values: dict[str, object],
+    features: dict[str, bool],
+    install: dict[str, list[str]],
+    run_steps: dict[str, list[str]],
+) -> None:
+    """Add a recipe's packages and image-wide RUN steps, each one once per family."""
+    for fam, packages in recipe.install.items():
+        bucket = install.setdefault(fam, [])
+        for package in packages:
+            if package not in bucket:
+                bucket.append(package)
+    for fam in recipe.run:
+        bucket = run_steps.setdefault(fam, [])
+        for command in recipe.runs_for(fam, features):
+            rendered = substitute(command, values)
+            if rendered not in bucket:
+                bucket.append(rendered)
+
+
+def _is_cron_path(target: str) -> bool:
+    path = PurePosixPath(target)
+    roots = [PurePosixPath(root) for root in CRON_PATHS]
+    return any(path == root or root in path.parents for root in roots)
+
+
+def _add_cron_runtime(
+    plan: BundlePlan,
+    resolved: dict[str, Resolved],
+    manifest: Manifest,
+    registry: Registry,
+    features: dict[str, bool],
+    shared_seen: set[str],
+    install: dict[str, list[str]],
+    run_steps: dict[str, list[str]],
+    problems: list[str],
+    warnings: list[str],
+) -> list[str]:
+    """Give the bundle one cron daemon when anything in it carries a schedule.
+
+    No service matches the cron recipe: a crontab is a file a service brings, not a
+    service of its own. Recipes only put it where cron reads schedules from, and this
+    adds the daemon that reads them, once for the whole image. The service baking the
+    first crontab carries the program — the first baked one, when the schedule comes in
+    through a bind — the way the first nginx service carries the shared nginx master.
+
+    Returns the names of the programs it added. Nothing waits for cron, so the caller
+    keeps them out of the depends_on graph: a service depending on the carrier would
+    otherwise start after the daemon too.
+    """
+    carrier = next(
+        (s for s in plan.baked if any(_is_cron_path(copy.target) for copy in s.copies)),
+        None,
+    )
+    if carrier is None:
+        bound = any(_is_cron_path(bind.path) for bind in manifest.active_binds(features).values())
+        if not bound or not plan.baked:
+            return []
+        carrier = plan.baked[0]
+
+    recipe = registry.get("cron")
+    if recipe is None or recipe.shared in shared_seen:
+        return []
+    if not recipe.supports(plan.family):
+        problems.append(
+            f"{carrier.spec.slug}: bakes a crontab, but recipe 'cron' does not support the "
+            f"{plan.family!r} base; choose a different base or override the recipe"
+        )
+        return []
+
+    # replicas belong to the carrier's own programs; the daemon is never scaled.
+    item = replace(resolved[carrier.spec.slug], recipe=recipe, replicas=1)
+    try:
+        programs = _programs_for(item, None, {}, features, warnings)
+        values = _values(item, None)
+        owners = {
+            program.name: service for service in plan.baked for program in service.programs
+        }
+        # Recipes written before the runtime was added by itself declare the program by
+        # hand. Two [program:cron] sections would not even load, so theirs stays.
+        declared = [program.name for program in programs if program.name in owners]
+        if declared:
+            for name in declared:
+                owner = owners[name]
+                warnings.append(
+                    f"{owner.spec.slug}: recipe {owner.recipe_name!r} declares program "
+                    f"{name!r} itself; the cron runtime is now added whenever a crontab is "
+                    f"baked, so that entry can go"
+                )
+            return []
+        _collect_packages(recipe, values, features, install, run_steps)
+    except SubstitutionError as exc:
+        problems.append(f"{carrier.spec.slug}: {exc}")
+        return []
+
+    if recipe.shared:
+        shared_seen.add(recipe.shared)
+    carrier.programs.extend(programs)
+    return [program.name for program in programs]
+
+
 def build(
     specs: list[ServiceSpec],
     manifest: Manifest,
@@ -519,17 +625,7 @@ def build(
                     plan.stages.append((stage, copy.from_image))
                 copy.from_stage = stage
 
-            for fam, packages in recipe.install.items():
-                bucket = install.setdefault(fam, [])
-                for package in packages:
-                    if package not in bucket:
-                        bucket.append(package)
-            for fam in recipe.run:
-                bucket = run_steps.setdefault(fam, [])
-                for command in recipe.runs_for(fam, features):
-                    rendered = substitute(command, values)
-                    if rendered not in bucket:
-                        bucket.append(rendered)
+            _collect_packages(recipe, values, features, install, run_steps)
         except SubstitutionError as exc:
             problems.append(f"{spec.slug}: {exc}")
             continue
@@ -554,6 +650,19 @@ def build(
         plan.baked.append(planned)
         plan.readiness.extend(planned.readiness)
 
+    detached = _add_cron_runtime(
+        plan,
+        {item.spec.slug: item for item in inside},
+        manifest,
+        registry,
+        features,
+        shared_seen,
+        install,
+        run_steps,
+        problems,
+        warnings,
+    )
+
     if problems:
         raise PlanError(problems)
 
@@ -577,7 +686,10 @@ def build(
             program_owner[program.name] = program
 
     # Translate service-level depends_on into program-level edges.
-    programs_of = {p.spec.slug: [prog.name for prog in p.programs] for p in plan.baked}
+    programs_of = {
+        p.spec.slug: [prog.name for prog in p.programs if prog.name not in detached]
+        for p in plan.baked
+    }
     for planned in plan.baked:
         for dependency in planned.spec.depends_on:
             for name in programs_of.get(planned.spec.slug, []):

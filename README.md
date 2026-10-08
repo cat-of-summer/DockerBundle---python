@@ -388,8 +388,8 @@ COPY context/_bundle/healthcheck.sh   /usr/local/bin/bundle-healthcheck.sh
 
 EXPOSE 80 3306 5173 9000 20000
 
-LABEL dev.dockerbundle.version="0.2.0" \
-      dev.dockerbundle.format="2" \
+LABEL dev.dockerbundle.version="0.3.1" \
+      dev.dockerbundle.format="4" \
       dev.dockerbundle.bundle="shop" \
       dev.dockerbundle.variant="cpu" \
       dev.dockerbundle.context-digest="sha256:0f446c327b..." \
@@ -418,7 +418,7 @@ $ docker inspect --format '{{ json .Config.Labels }}' ghcr.io/acme/shop-bundle:l
 
 ### supervisord.conf
 
-Пять `[program:...]`, упорядоченных по `priority`. Порядок выведен из базовых значений в
+Шесть `[program:...]`, упорядоченных по `priority`. Порядок выведен из базовых значений в
 рецептах, уточнённых топологической сортировкой `depends_on`:
 
 ```ini
@@ -451,9 +451,13 @@ process_name=%(program_name)s_%(process_num)02d
 command=nginx -g "daemon off;"
 priority=61
 stopsignal=QUIT
+
+[program:cron]
+command=cron -f
+priority=70                                          ← пришёл вместе с crontab laravel
 ```
 
-Три вещи стоит заметить:
+Четыре вещи стоит заметить:
 
 1. **`nginx` один на весь бандл**, хотя nginx-сервисов два. Рецепт объявляет
    `shared: nginx`: пакеты поставляют не целые конфиги, а фрагменты `server { }`, что и
@@ -465,6 +469,12 @@ stopsignal=QUIT
 3. **`numprocs` только у очереди.** Реплики возможны лишь для процессов, не занимающих
    порт; попытка отмасштабировать nginx дала бы `EADDRINUSE`, и сборщик об этом
    предупреждает.
+4. **`cron` никто не объявлял.** Рецепт laravel только кладёт расписание в
+   `/etc/cron.d/<слаг>`. Как только в образ попадает файл в `/etc/crontab`, `/etc/cron.d/`
+   или `/var/spool/cron/` - запечённый или через `binds:`, - сборщик сам добавляет общий
+   рантайм `cron`: пакет и одну программу на весь бандл, сколько бы сервисов ни принесли
+   расписание. В своём рецепте ставить cron и объявлять программу не нужно; если она уже
+   объявлена вручную, сборщик оставит её и предупредит, что запись можно убрать.
 
 ### entrypoint.sh: три фазы старта
 
@@ -651,7 +661,7 @@ services:
 Что получилось — в одном месте, чтобы не читать Dockerfile:
 
 ```yaml
-generator: {version: 0.3.0, format: 3}
+generator: {version: 0.3.1, format: 4}
 bundle: {name: shop, variant: cpu, image: ghcr.io/acme/shop-bundle:latest}
 features:
   mysql: true                          ← с какими флагами собрано

@@ -1,8 +1,11 @@
 name: cron
 priority: 10
 
-# Not matched directly: services declare a crontab and the planner adds this shared
-# runtime once, so a bundle never ends up with several cron daemons.
+# Not matched directly: a crontab is a file a service brings, not a service. Whenever the
+# bundle bakes one under /etc/crontab, /etc/cron.d or /var/spool/cron — or binds one
+# there — the planner adds this shared runtime once, so a bundle never ends up with
+# several cron daemons. The program lives with the service that baked the first crontab.
+# Recipes only put the schedule in place; they need not install cron or declare it.
 shared: cron
 
 families: [debian, alpine]
