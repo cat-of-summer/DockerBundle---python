@@ -118,3 +118,21 @@ def test_traefik_is_not_bakeable(registry: Registry):
     recipe, _ = registry.resolve(spec("traefik", image="traefik:v3"))
     assert recipe.name == "traefik"
     assert not recipe.bakeable
+
+
+def test_a_program_can_name_its_replica_key():
+    program = {"name": "worker", "command": "run", "replicas": "WORKER_REPLICAS"}
+    recipe = schema.from_dict({"name": "x", "supervisor": [program]})
+    assert recipe.programs[0].replicas == "WORKER_REPLICAS"
+
+
+def test_a_replica_key_must_be_an_env_key():
+    with pytest.raises(schema.RecipeError, match="not an .env key"):
+        schema.from_dict({"name": "x", "supervisor": [{"command": "run", "replicas": "workers"}]})
+
+
+def test_a_scaled_program_is_addressed_as_its_group():
+    from core.model import SupervisorProgram
+
+    assert SupervisorProgram(name="worker", command="run", replicas_var="W").target == "worker:*"
+    assert SupervisorProgram(name="api", command="run").target == "api"

@@ -276,7 +276,7 @@ def _programs_for(
 
         replicas_var = ""
         if rule.scalable:
-            replicas_var = f"{item.prefix}_REPLICAS"
+            replicas_var = rule.replicas or f"{item.prefix}_REPLICAS"
         elif item.replicas > 1:
             warnings.append(
                 f"{spec.slug}: replicas={item.replicas} ignored for program {name!r} — it binds "
@@ -710,7 +710,7 @@ def build(
     if plan.needs_init:
         for program in plan.programs:
             program.autostart = program.priority < INIT_BARRIER
-    plan.deferred = [p.name for p in plan.programs if not p.autostart]
+    plan.deferred = [p.target for p in plan.programs if not p.autostart]
 
     # -- volumes, replicas, warnings -------------------------------------
     for planned in plan.baked:
@@ -814,6 +814,7 @@ def _binds(
             host=bind.host,
             source=source,
             is_file=bool(source and source.is_file()),
+            read_only=bind.read_only,
         )
         if item.env in env_keys:
             problems.append(

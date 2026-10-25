@@ -321,6 +321,15 @@ class SupervisorProgram:
     critical: bool = True
     """Whether healthcheck.sh requires this program to be RUNNING."""
 
+    @property
+    def target(self) -> str:
+        """How supervisorctl addresses this program.
+
+        A program with ``numprocs`` becomes a group (``worker:worker_00``, ...): its bare
+        name is unknown to supervisorctl, so start and status must say ``worker:*``.
+        """
+        return f"{self.name}:*" if self.replicas_var else self.name
+
 
 @dataclass
 class ReadinessProbe:
@@ -406,6 +415,9 @@ class PlannedBind:
 
     is_file: bool = False
     """Bind a single file rather than a directory."""
+
+    read_only: bool = False
+    """Mount with ``:ro``."""
 
     @property
     def env(self) -> str:

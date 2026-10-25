@@ -1,6 +1,6 @@
 generator:
-  version: 0.3.1
-  format: 4
+  version: 0.4.0
+  format: 5
 bundle:
   name: shop
   variant: cpu
@@ -89,4 +89,4 @@ required_env:
 - MYSQL_EXTERNAL_ACCESS
 - VUE_EXTERNAL_ACCESS
 - VUE_NGINX_VITE_NGINX_EXTERNAL_ACCESS
-context_digest: sha256:a56987fe135262a7b9aa1faa5c319235746cf53c1570d4134c0ba5cb1b87c4fe
+context_digest: sha256:8767c9cdb3c9177245148b71d19d43bfea4be9f2ff3df9d836fba2deaa81575d

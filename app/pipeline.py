@@ -84,7 +84,12 @@ def ensure_entries(context: Context) -> None:
 
 
 def generate(
-    context: Context, *, variant: str = "cpu", image_ref: str = "", output: Path | None = None
+    context: Context,
+    *,
+    variant: str = "cpu",
+    image_ref: str = "",
+    output: Path | None = None,
+    build: Path | None = None,
 ) -> writer.Written:
     """Plan and render. Raises :class:`PlanError` when something blocks generation."""
     if context.discovery.errors:
@@ -105,6 +110,7 @@ def generate(
     return writer.render(
         plan,
         destination,
+        build=build or context.manifest.build_path(),
         variant=variant,
         image_ref=image_ref or context.manifest.image,
         labels=context.manifest.active_labels(context.features),

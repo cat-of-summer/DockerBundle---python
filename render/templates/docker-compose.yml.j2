@@ -34,10 +34,13 @@ services:
       - type: bind
         source: ${{ '{' }}{{ bind.env }}:-{{ bind.host }}}
         target: {{ bind.target }}
+{% if bind.read_only %}
+        read_only: true
+{% endif %}
         bind:
           create_host_path: false
 {% else %}
-      - ${{ '{' }}{{ bind.env }}:-{{ bind.host }}}:{{ bind.target }}
+      - ${{ '{' }}{{ bind.env }}:-{{ bind.host }}}:{{ bind.target }}{{ ':ro' if bind.read_only }}
 {% endif %}
 {% endfor %}
 {% endif %}

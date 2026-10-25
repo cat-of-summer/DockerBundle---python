@@ -236,6 +236,9 @@ def _where(mode) -> str:
 def generate(
     path: Path = typer.Option(None, "--config", "-c"),
     output: Path = typer.Option(None, "--output", "-o", help="Override the output directory."),
+    build_dir: Path = typer.Option(
+        None, "--build-dir", help="Override build_dir: where the Dockerfile and context go."
+    ),
     variant: str = typer.Option("", "--variant", help="Which base to build against (cpu, cuda)."),
     image: str = typer.Option(
         "", "--image", help="Image reference written into compose and .env."
@@ -266,7 +269,9 @@ def generate(
         raise typer.Exit(EXIT_USAGE)
 
     try:
-        written = pipeline.generate(context, variant=chosen, image_ref=image, output=output)
+        written = pipeline.generate(
+            context, variant=chosen, image_ref=image, output=output, build=build_dir
+        )
     except pipeline.PlanError as exc:
         errors.print(f"[red]{t('cli.blocked')}[/red]")
         for problem in exc.problems:
@@ -280,7 +285,7 @@ def generate(
 
     _show_warnings(written.warnings)
     console.print(f"[green]{t('cli.generated', path=written.directory)}[/green]")
-    console.print(t("cli.build_hint", path=written.directory))
+    console.print(t("cli.build_hint", path=written.build_directory or written.directory))
 
 
 def _run_wizard(path: Path | None, pull: bool) -> None:

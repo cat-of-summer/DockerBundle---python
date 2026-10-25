@@ -14,9 +14,10 @@ if ! supervisorctl -s "$SOCK" pid >/dev/null 2>&1; then
     exit 1
 fi
 
+# A scaled program is a group ("worker:*"): it is RUNNING only when every process is.
 check_program() {
     name=$1
-    state=$(supervisorctl -s "$SOCK" status "$name" 2>/dev/null | awk '{print $2}')
+    state=$(supervisorctl -s "$SOCK" status "$name" 2>/dev/null | awk '{print $2}' | sort -u | paste -sd, -)
     case "$state" in
         RUNNING) return 0 ;;
         "")      echo "$name: unknown to supervisord"; return 1 ;;
@@ -25,9 +26,9 @@ check_program() {
 }
 {% for program in plan.programs %}
 {% if program.critical %}
-check_program {{ program.name }} || status=1
+check_program '{{ program.target }}' || status=1
 {% else %}
-check_program {{ program.name }} || echo "{{ program.name }}: not running (non-critical)"
+check_program '{{ program.target }}' || echo "{{ program.name }}: not running (non-critical)"
 {% endif %}
 {% endfor %}
 {% for probe in plan.readiness %}

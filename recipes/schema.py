@@ -44,6 +44,7 @@ ENTRYPOINT_MODES = ("auto", "skip")
 #: ``{param.NAME}`` inside any recipe string.
 PARAM_REF = re.compile(r"\{param\.([A-Za-z_][A-Za-z0-9_]*)\}")
 _PARAM_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_ENV_KEY = re.compile(r"[A-Z][A-Z0-9_]*\Z")
 
 #: Values allowed in a recipe's ``mount_kinds``. Besides the real kinds, ``skip`` drops
 #: a mount outright — used for files the bundle replaces with its own, such as a
@@ -207,6 +208,14 @@ class ProgramRule:
     startsecs: int = 1
     scalable: bool = True
     """False when extra processes would fight over the same port."""
+
+    replicas: str = ""
+    """The .env key holding the process count; defaults to ``<PREFIX>_REPLICAS``.
+
+    The default is named after the service, so a service with two scalable programs would
+    scale both with one key, and a worker baked into an ``api`` service reads as
+    ``API_REPLICAS``. Naming the key per program says what it scales.
+    """
 
     critical: bool = True
     environment: dict[str, str] = field(default_factory=dict)
@@ -600,6 +609,12 @@ def _programs(value: Any, where: str) -> list[ProgramRule]:
         command = str(item.get("command", ""))
         if not command:
             raise RecipeError(f"{where}[{index}] needs a command")
+        replicas = str(item.get("replicas", ""))
+        if replicas and not _ENV_KEY.match(replicas):
+            raise RecipeError(
+                f"{where}[{index}].replicas: {replicas!r} is not an .env key "
+                f"(upper case letters, digits and _)"
+            )
         programs.append(
             ProgramRule(
                 name=str(item.get("name", "")),
@@ -610,6 +625,7 @@ def _programs(value: Any, where: str) -> list[ProgramRule]:
                 stopwaitsecs=int(item.get("stopwaitsecs", 10)),
                 startsecs=int(item.get("startsecs", 1)),
                 scalable=bool(item.get("scalable", True)),
+                replicas=replicas,
                 critical=bool(item.get("critical", True)),
                 environment={
                     str(k): str(v) for k, v in (item.get("environment") or {}).items()

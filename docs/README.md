@@ -472,16 +472,17 @@ pytest tests/test_golden.py --update-golden
 
 | Переменная | Значение |
 |---|---|
-| `ACTION_TRIGGER` | `RELEASE` |
+| `ACTION_TRIGGER` | `tag` |
 | `TOOLCHAIN` | `python@3.12` |
 | `RUNS_ON` | `ubuntu-latest,windows-latest` |
 | `BUILD_COMMAND` | `SKIP_TESTS=true bash build/build.sh` |
 | `CI_COMMAND` | `python -m pytest -m "not docker" -q` |
 | `RELEASE_FILES` | `dist/*` |
 
-`ACTION_TRIGGER` обязателен: по умолчанию он равен `WORKFLOW_DISPATCH`, а при этом
-значении пуш тега не запускает ни сборку, ни релиз. `PUSH` дополнительно гоняет CI на
-каждый пуш в любую ветку.
+`ACTION_TRIGGER` обязателен: по умолчанию он равен `workflow_dispatch`, а при этом
+значении пуш тега не запускает ни сборку, ни релиз. `tag` собирает и выпускает релиз по
+пушу тега `vX.Y.Z`; `push` дополнительно гоняет CI на каждый пуш в любую ветку. Другие
+значения Git_toolkit отвергает: допустимы `workflow_dispatch`, `push`, `branch`, `tag`.
 
 `RELEASE_FILES` — именно `dist/*`, а не `dist/dockerbundle-*`. Шаг `Flatten release asset
 names` в Git_toolkit срезает с имени файла всё до первого glob-символа: при
@@ -524,12 +525,12 @@ git push origin v0.1.0
 
 | Переменная | Значение |
 |---|---|
-| `ACTION_TRIGGER` | `RELEASE` |
+| `ACTION_TRIGGER` | `tag` |
 | `RUNS_ON` | `ubuntu-latest` |
 | `BUILD_COMMAND` | `curl -fsSL .../install.sh \| sh -s -- vX.Y.Z --dir "$RUNNER_TEMP/bin" && "$RUNNER_TEMP/bin/dockerbundle" generate --yes` |
 | `PUBLISH_METHOD` | `docker` |
-| `DOCKERFILE_PATH` | `dist/Dockerfile` |
-| `BUILD_CONTEXT` | `dist` |
+| `DOCKERFILE_PATH` | `dist/Dockerfile`; при `build_dir: .dockerbundle` - `.dockerbundle/Dockerfile` |
+| `BUILD_CONTEXT` | `dist`; при `build_dir` - `.dockerbundle` |
 
 Ссылку на публикуемый образ держите в `docker-bundle.yml`, а не только во флаге:
 

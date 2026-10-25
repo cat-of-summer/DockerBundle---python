@@ -10,6 +10,45 @@ families: [debian]
 install:
   debian: [postgresql, postgresql-client]
 
+# The official image does three things on a first start that a bare `postgres -D` does not:
+# initialises the data directory, creates POSTGRES_USER / POSTGRES_DB with
+# POSTGRES_PASSWORD, and runs /docker-entrypoint-initdb.d. Without them the server refuses
+# to start on an empty volume. bundle-postgres repeats that contract, then execs the
+# server. Debian keeps the binaries under /usr/lib/postgresql/<major>/bin, off PATH; the
+# script finds the newest one rather than pinning a major the base might not ship.
+run:
+  debian:
+    - >-
+      printf '%s\n'
+      '#!/bin/sh'
+      '# bundle-postgres PORT CONFIG DATA - first-start init, then the server in the foreground.'
+      'set -e'
+      'PORT="$1"; CONF="$2"; DATA="${3:-/var/lib/postgresql/data}"'
+      'BIN=$(ls -d /usr/lib/postgresql/*/bin | sort -V | tail -1)'
+      'U="${POSTGRES_USER:-postgres}"; DB="${POSTGRES_DB:-$U}"'
+      'as_pg() { su postgres -s /bin/sh -c "$1"; }'
+      'mkdir -p "$DATA" /var/run/postgresql && chown postgres:postgres "$DATA" /var/run/postgresql && chmod 700 "$DATA"'
+      'if [ ! -s "$DATA/PG_VERSION" ]; then'
+      '  if [ "${POSTGRES_HOST_AUTH_METHOD:-}" = trust ]; then AUTH=trust; PW=""; else'
+      '    [ -n "${POSTGRES_PASSWORD:-}" ] || { echo "postgres: POSTGRES_PASSWORD is empty (or set POSTGRES_HOST_AUTH_METHOD=trust)" >&2; exit 1; }'
+      '    AUTH=scram-sha-256; printf "%s" "$POSTGRES_PASSWORD" > /tmp/pg.pw; chown postgres /tmp/pg.pw; PW="--pwfile=/tmp/pg.pw"; fi'
+      '  as_pg "$BIN/initdb -D $DATA -U $U $PW -A $AUTH -E UTF8 ${POSTGRES_INITDB_ARGS:-}"'
+      '  rm -f /tmp/pg.pw'
+      '  echo "host all all all $AUTH" >> "$DATA/pg_hba.conf"'
+      '  as_pg "$BIN/pg_ctl -D $DATA -w -o \"-c listen_addresses= -p $PORT\" start" >/dev/null'
+      '  export PGHOST=/var/run/postgresql PGPORT="$PORT" PGUSER="$U" PGPASSWORD="${POSTGRES_PASSWORD:-}"'
+      '  [ "$DB" = postgres ] || psql -v ON_ERROR_STOP=1 -d postgres -qc "CREATE DATABASE \"$DB\""'
+      '  for f in /docker-entrypoint-initdb.d/*; do case "$f" in'
+      '    *.sql) psql -v ON_ERROR_STOP=1 -d "$DB" -qf "$f" ;;'
+      '    *.sql.gz) gunzip -c "$f" | psql -v ON_ERROR_STOP=1 -d "$DB" -q ;;'
+      '    *.sh) sh "$f" ;;'
+      '  esac; done'
+      '  as_pg "$BIN/pg_ctl -D $DATA -m fast -w stop" >/dev/null'
+      'fi'
+      'OPTS="-c listen_addresses=*"; [ -f "$CONF" ] && OPTS="-c config_file=$CONF"'
+      'exec su postgres -s /bin/sh -c "exec $BIN/postgres -D $DATA -p $PORT $OPTS"'
+      > /usr/local/bin/bundle-postgres && chmod +x /usr/local/bin/bundle-postgres
+
 copy:
   - src: postgresql.conf
     dest: /etc/postgresql/{slug}.conf
@@ -24,11 +63,13 @@ port:
 
 supervisor:
   - name: "{slug}"
-    command: sh -c 'exec su postgres -c "postgres -D /var/lib/postgresql/data -p {port}"'
+    command: /usr/local/bin/bundle-postgres {port} /etc/postgresql/{slug}.conf
     priority: 10
     # postgres treats SIGINT as a fast shutdown, which is what we want on docker stop.
     stopsignal: INT
     stopwaitsecs: 60
+    # The first start runs initdb and the init scripts before the server listens.
+    startsecs: 5
     scalable: false
     critical: true
 

@@ -85,6 +85,9 @@ class Bind:
     ship: str = ""
     """File or directory, relative to ``docker-bundle.yml``, copied into ``dist/<host>``."""
 
+    read_only: bool = False
+    """Mount it read-only: the container reads what the deployment edits, never the reverse."""
+
     when: list[str] = field(default_factory=list)
 
     def to_dict(self, name: str) -> Any:
@@ -93,6 +96,8 @@ class Bind:
             data["host"] = self.host
         if self.ship:
             data["ship"] = self.ship
+        if self.read_only:
+            data["read_only"] = True
         if self.when:
             data["when"] = list(self.when)
         return data
@@ -109,11 +114,11 @@ class Bind:
             raw = {"path": raw}
         if not isinstance(raw, dict):
             raise ManifestError(f"{where}: expected a path or a mapping with path:")
-        unknown = set(raw) - {"path", "host", "ship", "when"}
+        unknown = set(raw) - {"path", "host", "ship", "read_only", "when"}
         if unknown:
             raise ManifestError(
                 f"{where}: unknown key(s) {', '.join(sorted(unknown))}; "
-                f"expected path, host, ship or when"
+                f"expected path, host, ship, read_only or when"
             )
         path = str(raw.get("path") or "")
         if not path.startswith("/"):
@@ -134,6 +139,7 @@ class Bind:
             path=path.rstrip("/") or "/",
             host="./" + "/".join(parts),
             ship=str(raw.get("ship") or ""),
+            read_only=bool(raw.get("read_only", False)),
             when=_when(raw.get("when"), where),
         )
 
@@ -518,6 +524,13 @@ class Manifest:
 
     services: dict[str, ServiceEntry] = field(default_factory=dict)
     output: str = "dist"
+    build_dir: str = ""
+    """Where the build inputs go: Dockerfile, context/, the bundle's scripts.
+
+    Empty keeps them in :attr:`output`, next to the deployment files. Set, it splits the two:
+    ``output`` holds only what a server needs (compose file, .env.example, lock, binds), and
+    the image is built from this directory, which nobody ships.
+    """
     image: str = ""
     """Image reference the generated compose defaults to, e.g. ``ghcr.io/acme/stand:latest``.
 
@@ -584,6 +597,7 @@ class Manifest:
             "version": self.version,
             "name": self.name,
             "output": self.output,
+            **({"build_dir": self.build_dir} if self.build_dir else {}),
             "image": self.image,
             "variants": list(self.variants),
             "base": dict(self.base),
@@ -741,6 +755,7 @@ class Manifest:
                 for slug, entry in services_raw.items()
             },
             output=str(raw.get("output", "dist")),
+            build_dir=str(raw.get("build_dir") or ""),
             image=str(raw.get("image", "")),
             variants=[str(v) for v in variants],
             base=base,
@@ -866,6 +881,13 @@ class Manifest:
     def output_dir(self) -> Path:
         root = self.path.parent if self.path else Path.cwd()
         return (root / self.output).resolve()
+
+    def build_path(self) -> Path | None:
+        """The build directory, or ``None`` when the build inputs share :meth:`output_dir`."""
+        if not self.build_dir:
+            return None
+        root = self.path.parent if self.path else Path.cwd()
+        return (root / self.build_dir).resolve()
 
     def resolve(self, relative: str) -> Path:
         """Resolve a path written in the configuration against its own directory."""

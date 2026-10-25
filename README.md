@@ -307,8 +307,34 @@ dist/
 ```
 
 `dist/` самодостаточен: `docker build dist/` работает из любого каталога и не тянет в
-контекст сборки остальной репозиторий. Его коммитят — тогда каждое изменение стенда
+контекст сборки остальной репозиторий. Его коммитят - тогда каждое изменение стенда
 видно в дифе.
+
+### `build_dir:` - сборка отдельно от развёртывания
+
+Серверу из `dist/` нужны только `docker-compose.yml`, `.env.example`,
+`docker-bundle.lock.yml` и каталоги `binds`: образ приходит из реестра со всем остальным
+внутри. `build_dir` разводит выход на две части:
+
+```yaml
+output: dist                 # только то, что едет на сервер
+build_dir: .dockerbundle     # Dockerfile, context/, supervisord.conf, entrypoint.sh, healthcheck.sh
+```
+
+```
+dist/                          .dockerbundle/
+├── docker-compose.yml         ├── Dockerfile
+├── .env.example               ├── .dockerignore
+├── docker-bundle.lock.yml     ├── supervisord.conf, entrypoint.sh, healthcheck.sh
+└── config/      (binds)       └── context/
+```
+
+Образ собирается из `build_dir` (`docker build .dockerbundle`, в CI -
+`DOCKERFILE_PATH=.dockerbundle/Dockerfile`, `BUILD_CONTEXT=.dockerbundle`), а релиз несёт
+только `dist/`. Каталог сборки никто не поставляет: его держат в `.gitignore`. Без ключа всё
+пишется в `output`, как раньше. Переход на `build_dir` убирает из `output` входы сборки,
+оставшиеся от прошлой генерации, - только те, что писал сам генератор. Флаг
+`generate --build-dir` переопределяет ключ на один запуск.
 
 ---
 
@@ -388,8 +414,8 @@ COPY context/_bundle/healthcheck.sh   /usr/local/bin/bundle-healthcheck.sh
 
 EXPOSE 80 3306 5173 9000 20000
 
-LABEL dev.dockerbundle.version="0.3.1" \
-      dev.dockerbundle.format="4" \
+LABEL dev.dockerbundle.version="0.4.0" \
+      dev.dockerbundle.format="5" \
       dev.dockerbundle.bundle="shop" \
       dev.dockerbundle.variant="cpu" \
       dev.dockerbundle.context-digest="sha256:0f446c327b..." \
@@ -446,6 +472,15 @@ command=php /var/www/laravel_nginx_laravel/artisan queue:work --sleep=3 --tries=
 priority=60
 numprocs=%(ENV_LARAVEL_REPLICAS)s                    ← масштабируется: порт не занимает
 process_name=%(program_name)s_%(process_num)02d
+```
+
+Программа с `numprocs` для supervisord — группа: entrypoint запускает её как
+`queue-laravel_nginx_laravel:*`, а healthcheck считает её RUNNING, только когда работают
+все копии. Ключ числа копий по умолчанию назван по сервису (`<ПРЕФИКС>_REPLICAS`); правило
+программы в рецепте задаёт своё имя — `replicas: WORKER_REPLICAS`, — когда масштабируемых
+программ у сервиса несколько или имя сервиса ничего не говорит о том, что масштабируется.
+
+```ini
 
 [program:nginx]
 command=nginx -g "daemon off;"
@@ -661,7 +696,7 @@ services:
 Что получилось — в одном месте, чтобы не читать Dockerfile:
 
 ```yaml
-generator: {version: 0.3.1, format: 4}
+generator: {version: 0.4.0, format: 5}
 bundle: {name: shop, variant: cpu, image: ghcr.io/acme/shop-bundle:latest}
 features:
   mysql: true                          ← с какими флагами собрано
@@ -701,7 +736,13 @@ Compose-файл говорит, какой образ запустить; вн�
 Встроенных рецептов два десятка (`recipes/builtin/`), и они покрывают обычный набор:
 nginx, php-fpm, laravel, node, mysql/mariadb/postgres, redis, kafka, qdrant, ollama,
 traefik, cron. Список **не ограничивает** сборщик: свой рецепт пишется прямо в
-`docker-bundle.yml`, а если рецепта нет вообще — сработает автоматический.
+`docker-bundle.yml`, а если рецепта нет вообще - сработает автоматический.
+
+Рецепты баз повторяют контракт официальных образов там, где без него сервер не стартует.
+`postgres` на первом запуске пустого тома делает `initdb` от `POSTGRES_USER` /
+`POSTGRES_PASSWORD` (или `POSTGRES_HOST_AUTH_METHOD=trust`), открывает доступ по сети,
+создаёт `POSTGRES_DB`, выполняет `/docker-entrypoint-initdb.d` (`*.sql`, `*.sql.gz`, `*.sh`)
+и стартует с запечённым `postgresql.conf`, если пакет его принёс.
 
 ### Анатомия
 
@@ -755,7 +796,8 @@ recipes:
         priority: 40
         stopsignal: QUIT
         stopwaitsecs: 15
-        scalable: false                # порт занимает — вторая копия упадёт
+        scalable: false                # порт занимает - вторая копия упадёт
+        # replicas: NGINX_REPLICAS     # у scalable: свой ключ .env с числом копий
         critical: true                 # healthcheck требует RUNNING
 
     readiness:                          # чем проверять готовность
@@ -950,13 +992,15 @@ binds:
     path: /var/www/html/config    # куда в контейнере
     host: ./config                # где на хосте, от docker-compose.yml; по умолчанию ./<имя>
     ship: app/data/config         # что положить в dist/<host>; путь от docker-bundle.yml
+    read_only: true               # смонтировать :ro; по умолчанию false
     when: editable                # как у volumes
 ```
 
 Что получается:
 
-- в `docker-compose.yml` — `- ${CONFIG_DIR:-./config}:/var/www/html/config`, путь на
-  хосте переносится переменной в `.env`;
+- в `docker-compose.yml` - `- ${CONFIG_DIR:-./config}:/var/www/html/config`, путь на
+  хосте переносится переменной в `.env`; с `read_only: true` - с суффиксом `:ro`, и
+  контейнер правит только то, что ему положено;
 - в `.env.example` — секция `binds` с `CONFIG_DIR=./config`;
 - `ship` копируется в `dist/config` (с LF, как контекст сборки) и заменяет его целиком:
   файл, удалённый из исходника, не доживёт до следующего релиза. `dist/` разворачивается
@@ -968,7 +1012,9 @@ binds:
 подкладывает на его место пустой каталог, как делает короткая форма. Но каталог надёжнее:
 редакторы сохраняют через временный файл и переименование, и bind одного файла после этого
 продолжает показывать контейнеру старую версию до перезапуска. Без `ship` монтируется
-каталог, содержимое целиком на стороне развёртывания.
+каталог, содержимое целиком на стороне развёртывания: генератор кладёт в `dist/<host>`
+пустой `.gitkeep`, чтобы каталог был в архиве релиза и в git, а Docker не создавал его от
+root при первом старте. Что уже лежит в каталоге, остаётся.
 
 Ошибки, а не молчаливая подмена: bind поверх тома или внутри него (Docker отдал бы путь
 последнему маунту, и данные тома пропали бы из контейнера), два bind на один путь хоста,

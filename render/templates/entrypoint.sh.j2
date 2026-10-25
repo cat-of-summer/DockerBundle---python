@@ -144,7 +144,8 @@ run_init {{ service.spec.slug }} {{ service.init_script }}
 # ---- phase 3: application processes -----------------------------------------
 {% if plan.deferred %}
 log "starting application processes"
-supervisorctl -s "$SOCK" start {{ plan.deferred | join(' ') }} \
+# A scaled program is started as its group, 'name:*'; quoted so the shell does not glob it.
+supervisorctl -s "$SOCK" start{% for target in plan.deferred %} '{{ target }}'{% endfor %} \
     || log "WARNING: supervisorctl could not start the application processes"
 {% endif %}
 

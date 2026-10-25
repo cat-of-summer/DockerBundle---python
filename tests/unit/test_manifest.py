@@ -328,3 +328,21 @@ def test_features_gate_binds():
     )
     assert manifest.active_binds({"edit": False}) == {}
     assert set(manifest.active_binds({"edit": True})) == {"config"}
+
+
+def test_a_read_only_bind_round_trips(tmp_path):
+    manifest = Manifest.from_dict({"binds": {"config": {"path": "/etc/app", "read_only": True}}})
+    reloaded = Manifest.load(manifest.save(tmp_path / NAME))
+
+    assert reloaded.binds["config"].read_only is True
+    assert yaml.safe_load((tmp_path / NAME).read_text())["binds"]["config"]["read_only"] is True
+
+
+def test_build_dir_is_optional_and_resolved_next_to_the_file(tmp_path):
+    assert Manifest.from_dict({}).build_path() is None
+
+    manifest = Manifest.from_dict({"build_dir": ".dockerbundle"})
+    reloaded = Manifest.load(manifest.save(tmp_path / NAME))
+
+    assert reloaded.build_dir == ".dockerbundle"
+    assert reloaded.build_path() == (tmp_path / ".dockerbundle").resolve()
