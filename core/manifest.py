@@ -524,13 +524,6 @@ class Manifest:
 
     services: dict[str, ServiceEntry] = field(default_factory=dict)
     output: str = "dist"
-    build_dir: str = ""
-    """Where the build inputs go: Dockerfile, context/, the bundle's scripts.
-
-    Empty keeps them in :attr:`output`, next to the deployment files. Set, it splits the two:
-    ``output`` holds only what a server needs (compose file, .env.example, lock, binds), and
-    the image is built from this directory, which nobody ships.
-    """
     image: str = ""
     """Image reference the generated compose defaults to, e.g. ``ghcr.io/acme/stand:latest``.
 
@@ -597,7 +590,6 @@ class Manifest:
             "version": self.version,
             "name": self.name,
             "output": self.output,
-            **({"build_dir": self.build_dir} if self.build_dir else {}),
             "image": self.image,
             "variants": list(self.variants),
             "base": dict(self.base),
@@ -755,7 +747,6 @@ class Manifest:
                 for slug, entry in services_raw.items()
             },
             output=str(raw.get("output", "dist")),
-            build_dir=str(raw.get("build_dir") or ""),
             image=str(raw.get("image", "")),
             variants=[str(v) for v in variants],
             base=base,
@@ -881,13 +872,6 @@ class Manifest:
     def output_dir(self) -> Path:
         root = self.path.parent if self.path else Path.cwd()
         return (root / self.output).resolve()
-
-    def build_path(self) -> Path | None:
-        """The build directory, or ``None`` when the build inputs share :meth:`output_dir`."""
-        if not self.build_dir:
-            return None
-        root = self.path.parent if self.path else Path.cwd()
-        return (root / self.build_dir).resolve()
 
     def resolve(self, relative: str) -> Path:
         """Resolve a path written in the configuration against its own directory."""

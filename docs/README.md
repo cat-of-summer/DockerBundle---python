@@ -529,8 +529,8 @@ git push origin v0.1.0
 | `RUNS_ON` | `ubuntu-latest` |
 | `BUILD_COMMAND` | `curl -fsSL .../install.sh \| sh -s -- vX.Y.Z --dir "$RUNNER_TEMP/bin" && "$RUNNER_TEMP/bin/dockerbundle" generate --yes` |
 | `PUBLISH_METHOD` | `docker` |
-| `DOCKERFILE_PATH` | `dist/Dockerfile`; при `build_dir: .dockerbundle` - `.dockerbundle/Dockerfile` |
-| `BUILD_CONTEXT` | `dist`; при `build_dir` - `.dockerbundle` |
+| `DOCKERFILE_PATH` | `dist/Dockerfile` |
+| `BUILD_CONTEXT` | `dist` |
 
 Ссылку на публикуемый образ держите в `docker-bundle.yml`, а не только во флаге:
 

@@ -443,41 +443,6 @@ def test_a_read_only_bind_is_mounted_ro_and_locked(tmp_path):
     assert lock["binds"]["config"]["read_only"] is True
 
 
-# -- build_dir --------------------------------------------------------------
-
-
-DEPLOY_FILES = {"docker-compose.yml", ".env.example", "docker-bundle.lock.yml"}
-BUILD_INPUTS = {"Dockerfile", ".dockerignore", "supervisord.conf", "entrypoint.sh",
-                "healthcheck.sh", "context"}
-
-
-def test_build_dir_keeps_only_deployment_files_in_the_output(tmp_path):
-    output, build = tmp_path / "dist", tmp_path / ".dockerbundle"
-    written = writer.render(BundlePlan(name="stand"), output, build=build, image_ref="stand:test")
-
-    assert {p.name for p in output.iterdir()} == DEPLOY_FILES
-    assert {p.name for p in build.iterdir()} >= BUILD_INPUTS
-    assert (build / "context" / "_bundle" / "entrypoint.sh").is_file()
-    assert written.build_directory == build
-
-
-def test_without_build_dir_everything_stays_in_the_output(tmp_path):
-    output = tmp_path / "dist"
-    writer.render(BundlePlan(name="stand"), output, image_ref="stand:test")
-
-    assert {p.name for p in output.iterdir()} >= DEPLOY_FILES | BUILD_INPUTS
-
-
-def test_switching_to_build_dir_removes_stale_build_inputs_from_the_output(tmp_path):
-    output, build = tmp_path / "dist", tmp_path / ".dockerbundle"
-    writer.render(BundlePlan(name="stand"), output, image_ref="stand:test")
-    (output / "notes.txt").write_text("mine")
-
-    writer.render(BundlePlan(name="stand"), output, build=build, image_ref="stand:test")
-
-    assert {p.name for p in output.iterdir()} == DEPLOY_FILES | {"notes.txt"}
-
-
 
 def test_an_unshipped_directory_bind_gets_a_kept_empty_directory(tmp_path):
     from core.model import PlannedBind

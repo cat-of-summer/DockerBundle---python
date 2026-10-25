@@ -307,34 +307,8 @@ dist/
 ```
 
 `dist/` самодостаточен: `docker build dist/` работает из любого каталога и не тянет в
-контекст сборки остальной репозиторий. Его коммитят - тогда каждое изменение стенда
+контекст сборки остальной репозиторий. Его коммитят — тогда каждое изменение стенда
 видно в дифе.
-
-### `build_dir:` - сборка отдельно от развёртывания
-
-Серверу из `dist/` нужны только `docker-compose.yml`, `.env.example`,
-`docker-bundle.lock.yml` и каталоги `binds`: образ приходит из реестра со всем остальным
-внутри. `build_dir` разводит выход на две части:
-
-```yaml
-output: dist                 # только то, что едет на сервер
-build_dir: .dockerbundle     # Dockerfile, context/, supervisord.conf, entrypoint.sh, healthcheck.sh
-```
-
-```
-dist/                          .dockerbundle/
-├── docker-compose.yml         ├── Dockerfile
-├── .env.example               ├── .dockerignore
-├── docker-bundle.lock.yml     ├── supervisord.conf, entrypoint.sh, healthcheck.sh
-└── config/      (binds)       └── context/
-```
-
-Образ собирается из `build_dir` (`docker build .dockerbundle`, в CI -
-`DOCKERFILE_PATH=.dockerbundle/Dockerfile`, `BUILD_CONTEXT=.dockerbundle`), а релиз несёт
-только `dist/`. Каталог сборки никто не поставляет: его держат в `.gitignore`. Без ключа всё
-пишется в `output`, как раньше. Переход на `build_dir` убирает из `output` входы сборки,
-оставшиеся от прошлой генерации, - только те, что писал сам генератор. Флаг
-`generate --build-dir` переопределяет ключ на один запуск.
 
 ---
 
@@ -736,7 +710,7 @@ Compose-файл говорит, какой образ запустить; вн�
 Встроенных рецептов два десятка (`recipes/builtin/`), и они покрывают обычный набор:
 nginx, php-fpm, laravel, node, mysql/mariadb/postgres, redis, kafka, qdrant, ollama,
 traefik, cron. Список **не ограничивает** сборщик: свой рецепт пишется прямо в
-`docker-bundle.yml`, а если рецепта нет вообще - сработает автоматический.
+`docker-bundle.yml`, а если рецепта нет вообще — сработает автоматический.
 
 Рецепты баз повторяют контракт официальных образов там, где без него сервер не стартует.
 `postgres` на первом запуске пустого тома делает `initdb` от `POSTGRES_USER` /
@@ -796,7 +770,7 @@ recipes:
         priority: 40
         stopsignal: QUIT
         stopwaitsecs: 15
-        scalable: false                # порт занимает - вторая копия упадёт
+        scalable: false                # порт занимает — вторая копия упадёт
         # replicas: NGINX_REPLICAS     # у scalable: свой ключ .env с числом копий
         critical: true                 # healthcheck требует RUNNING
 
@@ -998,7 +972,7 @@ binds:
 
 Что получается:
 
-- в `docker-compose.yml` - `- ${CONFIG_DIR:-./config}:/var/www/html/config`, путь на
+- в `docker-compose.yml` — `- ${CONFIG_DIR:-./config}:/var/www/html/config`, путь на
   хосте переносится переменной в `.env`; с `read_only: true` - с суффиксом `:ro`, и
   контейнер правит только то, что ему положено;
 - в `.env.example` — секция `binds` с `CONFIG_DIR=./config`;

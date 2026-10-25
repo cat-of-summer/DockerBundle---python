@@ -47,8 +47,6 @@ class Written:
     directory: Path
     files: list[Path] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
-    build_directory: Path | None = None
-    """Where the Dockerfile went; the same as :attr:`directory` unless ``build_dir`` is set."""
 
 
 def _environment() -> Environment:
@@ -395,52 +393,20 @@ def ship_binds(plan: BundlePlan, output: Path, written: Written) -> None:
             written.files.append(destination)
 
 
-BUILD_FILES = ("Dockerfile", "supervisord.conf", "entrypoint.sh", "healthcheck.sh")
-DOCKERIGNORE = "context/**/.git\n**/__pycache__\n**/node_modules\n"
-
-
-def _drop_stale_build_files(output: Path) -> None:
-    """Remove build inputs an earlier generation left in ``output``.
-
-    Switching to ``build_dir`` would otherwise leave a Dockerfile in ``dist/`` that no
-    longer matches anything. Only files this generator wrote are touched: each carries the
-    header, and the context is recognised by its ``_bundle`` directory.
-    """
-    for name in BUILD_FILES:
-        path = output / name
-        head = path.read_text(encoding="utf-8", errors="replace")[:400] if path.is_file() else ""
-        if "dockerbundle" in head:
-            path.unlink()
-    ignore = output / ".dockerignore"
-    if ignore.is_file() and ignore.read_text(encoding="utf-8", errors="replace") == DOCKERIGNORE:
-        ignore.unlink()
-    context = output / "context"
-    if (context / "_bundle").is_dir():
-        shutil.rmtree(context)
-
-
 def render(
     plan: BundlePlan,
     output: Path,
     *,
-    build: Path | None = None,
     variant: str = "cpu",
     image_ref: str = "",
     labels: dict[str, str] | None = None,
 ) -> Written:
-    """Write the deployment files into ``output`` and the build inputs into ``build``.
-
-    Without ``build`` both go into ``output``, the layout every earlier version produced.
-    """
-    build = build or output
-    written = Written(directory=output, warnings=list(plan.warnings), build_directory=build)
+    """Write the whole ``dist/`` tree and return what was produced."""
+    written = Written(directory=output, warnings=list(plan.warnings))
     env = _environment()
     output.mkdir(parents=True, exist_ok=True)
-    build.mkdir(parents=True, exist_ok=True)
-    if build.resolve() != output.resolve():
-        _drop_stale_build_files(output)
 
-    context = build / "context"
+    context = output / "context"
     stage_context(plan, context, written)
 
     image_ref = image_ref or f"{plan.name}:latest"
@@ -460,10 +426,10 @@ def render(
     required_env = _required_env(plan)
 
     # supervisord
-    _write(build / "supervisord.conf",
+    _write(output / "supervisord.conf",
            env.get_template("supervisord.conf.j2").render(**common), written)
     _write(context / "_bundle" / "supervisord.conf",
-           (build / "supervisord.conf").read_text(encoding="utf-8"), written)
+           (output / "supervisord.conf").read_text(encoding="utf-8"), written)
 
     # entrypoint
     entrypoint = env.get_template("entrypoint.sh.j2").render(
@@ -472,19 +438,19 @@ def render(
         readiness_before_init=_readiness_before_init(plan),
         required_env=required_env,
     )
-    _write(build / "entrypoint.sh", entrypoint, written, executable=True)
+    _write(output / "entrypoint.sh", entrypoint, written, executable=True)
     _write(context / "_bundle" / "entrypoint.sh", entrypoint, written, executable=True)
 
     # healthcheck
     healthcheck = env.get_template("healthcheck.sh.j2").render(**common)
-    _write(build / "healthcheck.sh", healthcheck, written, executable=True)
+    _write(output / "healthcheck.sh", healthcheck, written, executable=True)
     _write(context / "_bundle" / "healthcheck.sh", healthcheck, written, executable=True)
 
     # Dockerfile last of the build inputs: its labels carry the digest of the finished
     # context, and that is only known once every file above has been staged.
     context_digest = _digest(context)
     _write(
-        build / "Dockerfile",
+        output / "Dockerfile",
         env.get_template("Dockerfile.j2").render(
             **common,
             install=plan.install.get(plan.family, []),
@@ -535,7 +501,7 @@ def render(
         written,
     )
 
-    _write(build / ".dockerignore", DOCKERIGNORE, written)
+    _write(output / ".dockerignore", "context/**/.git\n**/__pycache__\n**/node_modules\n", written)
     ship_binds(plan, output, written)
     _write(
         output / LOCK_NAME,
