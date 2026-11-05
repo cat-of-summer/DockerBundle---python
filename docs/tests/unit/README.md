@@ -17,6 +17,7 @@
 - [test_ports.py](test_ports.py.md)
 - [test_recipe_merge.py](test_recipe_merge.py.md)
 - [test_recipes.py](test_recipes.py.md)
+- [test_render_scripts.py](test_render_scripts.py.md)
 - [test_shell.py](test_shell.py.md)
 - [test_writer.py](test_writer.py.md)
 
