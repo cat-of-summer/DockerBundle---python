@@ -1,5 +1,5 @@
 generator:
-  version: 0.5.1
+  version: 0.5.2
   format: 5
 bundle:
   name: shop
@@ -89,4 +89,4 @@ required_env:
 - MYSQL_EXTERNAL_ACCESS
 - VUE_EXTERNAL_ACCESS
 - VUE_NGINX_VITE_NGINX_EXTERNAL_ACCESS
-context_digest: sha256:bd0881589b4b59616b739fb1ab776dc7d34bd07c5cc548f2b95bb8a7786c860f
+context_digest: sha256:851bbf043369a0548020a9f1bcc4f587108290a5cd06ec71bfd1dfdebfb68b4f

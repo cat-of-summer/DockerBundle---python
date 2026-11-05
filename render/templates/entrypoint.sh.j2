@@ -150,7 +150,14 @@ supervisorctl -s "$SOCK" start{% for target in plan.deferred %} '{{ target }}'{%
 {% endif %}
 
 log "bundle up with {{ plan.programs | length }} program(s)"
-wait "$SUPERVISORD_PID"
+# The TERM trap interrupts wait at once, while supervisord is still stopping its programs. Exiting
+# here would kill them with the container, so wait until supervisord itself has gone.
+rc=0
+while kill -0 "$SUPERVISORD_PID" 2>/dev/null; do
+    rc=0
+    wait "$SUPERVISORD_PID" || rc=$?
+done
+exit "$rc"
 {% else %}
 
 log "starting supervisord with {{ plan.programs | length }} program(s)"
