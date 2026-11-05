@@ -13,6 +13,7 @@ from pathlib import Path, PurePosixPath
 
 from core.manifest import Manifest
 from core.model import (
+    PUBLISH_NONE,
     BundlePlan,
     CopyOp,
     MountKind,
@@ -28,6 +29,7 @@ from core.model import (
     env_prefix,
     normalise_slug,
 )
+from discover.interpolate import referenced_names
 from plan import envmerge, graph, mounts, ports
 from plan.substitute import SubstitutionError, substitute
 from recipes import fallback
@@ -237,6 +239,31 @@ def _publish_for(
             f"(it has {', '.join(map(str, sorted(known))) or 'none'}); ignored"
         )
     return {original: spec for original, spec in entry.publish.items() if original in known}
+
+
+def _drop_unpublished_variables(spec: ServiceSpec, manifest: Manifest) -> None:
+    """Forget a variable whose only job was publishing a port ``publish: none`` closed.
+
+    ``ports: ["${EXTERNAL_ACCESS}"]`` is how every package here publishes. Once the bundle
+    keeps the port inside, nothing reads the variable, yet it would still land in the
+    merged ``.env`` under a made-up name, be asked of the deployment as required, and
+    conflict with the same-named variable of every other service.
+    """
+    entry = manifest.services.get(spec.slug)
+    if not entry or not entry.publish or len(spec.raw_ports) != len(spec.ports):
+        return
+
+    closed: set[str] = set()
+    kept: set[str] = set()
+    for raw, port in zip(spec.raw_ports, spec.ports):
+        names = referenced_names(raw)
+        (closed if entry.publish.get(port.original) == PUBLISH_NONE else kept).update(names)
+    for value in spec.raw_environment.values():
+        kept.update(referenced_names(value))
+
+    unused = closed - kept
+    if unused:
+        spec.env_vars = [var for var in spec.env_vars if var.key not in unused]
 
 
 def _values(item: Resolved, port: int | None) -> dict[str, object]:
@@ -489,6 +516,8 @@ def build(
     problems.extend(allocation.errors)
 
     # -- environment ----------------------------------------------------
+    for item in resolved:
+        _drop_unpublished_variables(item.spec, manifest)
     assigned_ports = {
         slug: entries[0].container for slug, entries in allocation.ports.items() if entries
     }

@@ -230,3 +230,42 @@ def test_a_prefix_rule_for_an_undeclared_key_adds_nothing():
         rules={"GHOST": EnvRule(rule="prefix")},
     )
     assert [e.key for e in merged.entries] == ["OTHER"]
+
+
+def test_process_environment_maps_an_alias_to_the_key_it_reads():
+    # `POSTGRES_USER: ${DB_USER}`: compose would resolve it, one container has no compose.
+    db = service("db", {"DB_USER": "agent"}, raw={"POSTGRES_USER": "${DB_USER}", "X": "$DB_USER", "Y": "${DB_USER:-a}"})
+    merged = envmerge.merge([db], globals_=[])
+    assert envmerge.process_environment(db, merged) == {
+        "POSTGRES_USER": "%(ENV_DB_USER)s",
+        "X": "%(ENV_DB_USER)s",
+        "Y": "%(ENV_DB_USER)s",
+    }
+
+
+def test_process_environment_skips_aliases_it_cannot_resolve():
+    # supervisord refuses to start on a %(ENV_X)s the environment does not have.
+    db = service("db", {"A": "1"}, raw={"B": "${MISSING}", "C": "x-${A}", "A": "${A}"})
+    merged = envmerge.merge([db], globals_=[])
+    assert envmerge.process_environment(db, merged) == {}
+
+
+def test_process_environment_follows_a_rename_through_an_alias():
+    db = service("db", {"DB_USER": "agent"}, raw={"POSTGRES_USER": "${DB_USER}"})
+    merged = envmerge.merge(
+        [db, service("api", {"DB_USER": "other"})],
+        globals_=[],
+        rules={"DB_USER": EnvRule(rule="prefix")},
+        prefixes={"db": "DB", "api": "API"},
+    )
+    assert envmerge.process_environment(db, merged)["POSTGRES_USER"] == "%(ENV_DB_DB_USER)s"
+
+
+def test_drop_keeps_a_key_out_of_the_deployment_env():
+    merged = envmerge.merge(
+        [service("a", {"VERSION": "1", "X": "1"}), service("b", {"VERSION": "2"})],
+        globals_=[],
+        rules={"VERSION": EnvRule(rule="drop")},
+    )
+    assert not merged.conflicts
+    assert [e.key for e in merged.entries] == ["X"]

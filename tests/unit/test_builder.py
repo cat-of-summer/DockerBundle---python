@@ -332,3 +332,27 @@ def test_a_crontab_bind_brings_the_cron_daemon(catalog, registry, tmp_path):
     plan = _bind_plan(catalog, registry, tmp_path, {"schedule": "/etc/cron.d"})
 
     assert len(_cron(plan)) == 1
+
+
+def test_a_closed_port_takes_its_variable_out_of_the_env(catalog, registry):
+    # publish: none leaves nothing reading ${EXTERNAL_ACCESS}; it must not be asked of the
+    # deployment, nor conflict with the same-named variable of the services still published.
+    discovery = resolve.collect([SourceRef(type="catalog", path=str(catalog))], catalog.parent)
+    slugs = {"laravel_nginx_nginx", "vue_nginx_vite_nginx"}
+    specs = [spec for spec in discovery.services if spec.slug in slugs]
+    closed = next(spec for spec in specs if spec.slug == "vue_nginx_vite_nginx")
+    published = next(spec for spec in specs if spec.slug == "laravel_nginx_nginx")
+    assert closed.ports and "EXTERNAL_ACCESS" in {var.key for var in closed.env_vars}
+
+    manifest = Manifest(
+        name="test",
+        services={
+            published.slug: ServiceEntry(slug=published.slug),
+            closed.slug: ServiceEntry(slug=closed.slug, publish={port.original: "none" for port in closed.ports}),
+        },
+        env={},
+    )
+    plan = builder.build(specs, manifest, registry)
+    assert [entry.value for entry in plan.env if entry.key == "EXTERNAL_ACCESS"] == [
+        next(var.value for var in published.env_vars if var.key == "EXTERNAL_ACCESS")
+    ]

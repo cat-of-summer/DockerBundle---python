@@ -342,9 +342,9 @@ def _publish(raw: Any, slug: str) -> dict[int, str]:
 
 
 def _env_rule_text(text: str, where: str) -> str:
-    if text != "prefix" and not text.startswith(ENV_RULE_PREFIXES):
+    if text not in ("prefix", "drop") and not text.startswith(ENV_RULE_PREFIXES):
         raise ManifestError(
-            f"{where}: expected prefix|keep:<slug>|value:<literal>|local:<slug>, got {text!r}"
+            f"{where}: expected prefix|drop|keep:<slug>|value:<literal>|local:<slug>, got {text!r}"
         )
     for marker in ("keep:", "local:"):
         if text.startswith(marker) and not text[len(marker) :].strip():
@@ -357,7 +357,7 @@ class EnvRule:
     """What to do with one environment key that several services define."""
 
     rule: str = ""
-    """``prefix`` | ``keep:<slug>`` | ``value:<literal>`` | ``local:<slug>``, or empty."""
+    """``prefix`` | ``drop`` | ``keep:<slug>`` | ``value:<literal>`` | ``local:<slug>``, or empty."""
 
     per_service: dict[str, str] = field(default_factory=dict)
     """Slug -> the name this service's value takes in the merged ``.env``.

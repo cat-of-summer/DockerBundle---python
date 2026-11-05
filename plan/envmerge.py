@@ -19,12 +19,22 @@ nothing downstream.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from core.manifest import EnvRule
 from core.model import EnvVar, ServiceSpec
 from discover.interpolate import referenced_names
 from plan.substitute import SubstitutionError, expand_local
+
+
+#: A compose value that is one variable and nothing else: ``${X}``, ``$X``, ``${X:-fallback}``.
+_WHOLE_REFERENCE = re.compile(r"^\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)(?::?-[^}]*)?\})$")
+
+
+def _whole_reference(value: str) -> str | None:
+    match = _WHOLE_REFERENCE.match(value.strip())
+    return (match.group(1) or match.group(2)) if match else None
 
 
 @dataclass
@@ -122,6 +132,11 @@ def merge(
         distinct = {entry.value for entry in entries}
         rule = rules.get(key) or EnvRule()
         where = f"env.{key}"
+
+        # The author says the deployment has no use for this key: a version pin or a build
+        # setting of a stand, meaningless once the image is built.
+        if rule.rule == "drop":
+            continue
 
         # Explicit per-service names come first and are honoured whether or not the key
         # currently conflicts. Ignoring them because the values happen to agree today
@@ -260,12 +275,26 @@ def _check_collisions(result: Merge) -> None:
 def process_environment(spec: ServiceSpec, merged: Merge) -> dict[str, str]:
     """Environment a service's supervisord programs need beyond the container's own.
 
-    Only keys that were renamed need an entry: everything else is already in the
-    container environment under the name the application expects. The value is a
-    supervisord ``%(ENV_X)s`` reference to the renamed key.
+    Two kinds of key need an entry; everything else is already in the container
+    environment under the name the application expects. A renamed key has to be mapped
+    back, and so does an alias: ``POSTGRES_USER: ${DB_USER}`` asks for a name no ``.env``
+    defines, because compose would have resolved it and the bundle's one container does
+    not. The value is a supervisord ``%(ENV_X)s`` reference to the outer key.
     """
     mapping: dict[str, str] = {}
     renames = merged.renames.get(spec.slug, {})
+
+    # Only a key the merged .env holds: supervisord refuses to start on a %(ENV_X)s it
+    # cannot resolve, and an alias of nothing has no value to hand over anyway.
+    known = {entry.key for entry in merged.entries}
+    for process_key, raw_value in spec.raw_environment.items():
+        reference = _whole_reference(raw_value)
+        if reference is None or reference == process_key:
+            continue
+        outer = renames.get(reference, reference)
+        if outer in known:
+            mapping[process_key] = f"%(ENV_{outer})s"
+
     if not renames:
         return mapping
 
