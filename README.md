@@ -388,7 +388,7 @@ COPY context/_bundle/healthcheck.sh   /usr/local/bin/bundle-healthcheck.sh
 
 EXPOSE 80 3306 5173 9000 20000
 
-LABEL dev.dockerbundle.version="0.5.0" \
+LABEL dev.dockerbundle.version="0.5.1" \
       dev.dockerbundle.format="5" \
       dev.dockerbundle.bundle="shop" \
       dev.dockerbundle.variant="cpu" \
@@ -670,7 +670,7 @@ services:
 Что получилось — в одном месте, чтобы не читать Dockerfile:
 
 ```yaml
-generator: {version: 0.5.0, format: 5}
+generator: {version: 0.5.1, format: 5}
 bundle: {name: shop, variant: cpu, image: ghcr.io/acme/shop-bundle:latest}
 features:
   mysql: true                          ← с какими флагами собрано
