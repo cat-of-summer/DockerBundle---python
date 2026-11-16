@@ -267,6 +267,38 @@ def test_a_bind_over_a_service_volume_blocks_generation(catalog, registry, tmp_p
         _bind_plan(catalog, registry, tmp_path, {"mysql": "/var/lib/mysql"})
 
 
+def test_module_binds_share_the_data_root_variable(catalog, registry, tmp_path):
+    (tmp_path / "seed").mkdir()
+    raw = {
+        "name": "shop",
+        "module": {"data": "data", "hooks": "/etc/toolkit"},
+        "binds": {
+            "config": {"path": "/etc/app", "ship": "seed", "seed": True},
+            "keys": {"path": "/etc/keys", "host": "./keys"},
+        },
+    }
+    manifest = Manifest.from_dict(raw)
+    plan = plan_for(
+        catalog, registry, ALL, **RESOLVED,
+        binds=manifest.binds, module=manifest.module, path=tmp_path / "docker-bundle.yml",
+    )
+
+    config, keys = plan.binds
+    assert (config.root_env, config.env, config.seed) == ("TEST_DATA", "TEST_DATA", True)
+    assert config.source_expr == "./${TEST_DATA:-data}/config"
+    assert (keys.root_env, keys.env) == ("", "KEYS_DIR")
+    assert plan.module.hooks_host == "hooks/test"
+
+
+def test_a_seed_that_is_a_file_blocks_generation(catalog, registry, tmp_path):
+    (tmp_path / "hosts.json").write_text("[]")
+    with pytest.raises(PlanError, match="seed needs ship to be a directory"):
+        _bind_plan(
+            catalog, registry, tmp_path,
+            {"hosts": {"path": "/etc/hosts.json", "ship": "hosts.json", "seed": True}},
+        )
+
+
 def test_a_bind_over_baked_code_warns(catalog, registry, tmp_path):
     plan = _bind_plan(catalog, registry, tmp_path, {"code": "/var/www/laravel_nginx_laravel"})
     assert any("binds.code" in w and "hides it" in w for w in plan.warnings)

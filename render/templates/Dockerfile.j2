@@ -77,6 +77,10 @@ RUN {{ step }}
 
 {% endif %}
 {% endfor %}
+{% if seeds %}
+# Starting content of binds, copied into them on start while they are still empty.
+COPY context/_bundle/seed /usr/local/share/bundle/seed
+{% endif %}
 COPY context/_bundle/supervisord.conf /etc/supervisord.conf
 COPY context/_bundle/entrypoint.sh /usr/local/bin/bundle-entrypoint.sh
 COPY context/_bundle/healthcheck.sh /usr/local/bin/bundle-healthcheck.sh

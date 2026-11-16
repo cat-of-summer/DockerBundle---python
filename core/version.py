@@ -1,7 +1,7 @@
-__version__ = "0.5.2"
+__version__ = "0.6.0"
 
 #: Bumped whenever the shape of docker-bundle.yml changes incompatibly.
 MANIFEST_VERSION = 2
 
 #: Bumped whenever generated output changes; recorded in the lock file.
-GENERATOR_VERSION = 5
+GENERATOR_VERSION = 6

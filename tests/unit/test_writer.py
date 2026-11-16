@@ -456,3 +456,119 @@ def test_an_unshipped_directory_bind_gets_a_kept_empty_directory(tmp_path):
 
     assert (output / "plugins" / ".gitkeep").is_file()
     assert (output / "plugins" / "local.php").read_text() == "mine"
+
+
+# -- module -----------------------------------------------------------------
+
+
+def _module_dist(tmp_path):
+    from core.model import PlannedBind, PlannedModule, SupervisorProgram
+
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    (seed / "settings.php").write_text("<?php return [];\n")
+    module = PlannedModule(
+        prefix="AGENT", context="services/agent", data="./data", hooks="/etc/toolkit",
+        hooks_host="hooks/agent",
+    )
+    binds = [
+        PlannedBind(name="config", target="/agent/config", host="./data/config", source=seed,
+                    seed=True, root="./data", root_env="AGENT_DATA"),
+        PlannedBind(name="tools", target="/agent/tools", host="./data/tools", read_only=True,
+                    root="./data", root_env="AGENT_DATA"),
+        PlannedBind(name="keys", target="/agent/keys", host="./keys"),
+    ]
+    plan = BundlePlan(name="agent", binds=binds, module=module)
+    plan.programs = [SupervisorProgram(name="api", command="run")]
+    output = tmp_path / "dist"
+    writer.render(plan, output, image_ref="agent:test")
+    return output
+
+
+def test_a_module_compose_is_a_named_project_with_build_logs_and_hooks(tmp_path):
+    import yaml
+
+    output = _module_dist(tmp_path)
+    compose = yaml.safe_load((output / "docker-compose.yml").read_text())
+
+    assert compose["name"] == "agent${INSTANCE:-}"
+    service = compose["services"]["agent"]
+    assert service["hostname"] == "agent${INSTANCE:-}"
+    assert service["build"]["context"] == "${AGENT_MODULE:-services/agent}"
+    assert service["build"]["args"]["HTTPS_PROXY"] == "${HTTPS_PROXY:-}"
+    assert service["logging"] == {
+        "driver": "json-file",
+        "options": {"max-size": "${CONTAINER_LOGS_MAX_SIZE:-100m}", "max-file": "2"},
+    }
+    assert service["volumes"] == [
+        "./${AGENT_DATA:-data}/config:/agent/config",
+        "./${AGENT_DATA:-data}/tools:/agent/tools:ro",
+        "${KEYS_DIR:-./keys}:/agent/keys",
+        "./${AGENT_HOOKS:-hooks/agent}:/etc/toolkit:ro",
+    ]
+
+
+def test_a_module_env_names_one_data_root_instead_of_a_variable_per_bind(tmp_path):
+    env = (_module_dist(tmp_path) / ".env.example").read_text()
+
+    assert "\nAGENT_MODULE=.\n" in env
+    assert "\nAGENT_DATA=data\n" in env
+    assert "\nAGENT_HOOKS=hooks/agent\n" in env
+    assert "\nCONTAINER_LOGS_MAX_SIZE=100m\n" in env
+    assert "CONFIG_DIR" not in env and "TOOLS_DIR" not in env
+    assert "\nKEYS_DIR=./keys\n" in env
+
+
+def test_a_module_ships_data_hooks_ignores_and_seeds(tmp_path):
+    output = _module_dist(tmp_path)
+
+    assert (output / "data" / "config" / "settings.php").is_file()
+    assert (output / "data" / "tools" / ".gitkeep").is_file()
+    assert (output / "hooks" / "agent" / "entrypoint.d" / ".gitkeep").is_file()
+    assert (output / "hooks" / "agent" / "supervisord.d" / ".gitkeep").is_file()
+    assert (output / ".gitignore").read_text() == ".env\n"
+    ignored = (output / ".dockerignore").read_text().splitlines()
+    assert {"data/", "hooks/", ".env"} <= set(ignored)
+
+    assert (output / "context" / "_bundle" / "seed" / "config" / "settings.php").is_file()
+    assert "COPY context/_bundle/seed /usr/local/share/bundle/seed" in (
+        output / "Dockerfile"
+    ).read_text()
+    entrypoint = (output / "entrypoint.sh").read_text()
+    assert "seed_dir config /agent/config\n" in entrypoint
+    assert "for hook in /etc/toolkit/entrypoint.d/*.sh" in entrypoint
+    assert r"sed 's/\r$//'" in entrypoint
+    assert "files = /etc/toolkit/supervisord.d/*.conf" in (output / "supervisord.conf").read_text()
+
+
+def test_a_standalone_bundle_has_no_module_parts(tmp_path):
+    output = tmp_path / "dist"
+    writer.render(BundlePlan(name="stand"), output, image_ref="stand:test")
+
+    compose = (output / "docker-compose.yml").read_text()
+    assert "\nname:" not in compose and "logging:" not in compose and "build:" not in compose
+    assert not (output / ".gitignore").exists()
+    assert not (output / "hooks").exists()
+    assert "seed_dir" not in (output / "entrypoint.sh").read_text()
+
+
+def test_a_command_probe_is_quoted_and_checked_by_the_healthcheck(tmp_path):
+    from core.model import ReadinessProbe
+
+    db = _service("db")
+    db.programs = [SupervisorProgram(name="db", command="run", priority=10)]
+    app = _service("app")
+    app.pre_init = ["php run migrate"]
+    app.programs = [SupervisorProgram(name="app", command="run", priority=40)]
+    plan = BundlePlan(name="stand", baked=[db, app])
+    plan.programs = [*db.programs, *app.programs]
+    plan.readiness = [
+        ReadinessProbe(kind="command", target="pg_isready -q -h 127.0.0.1 -p 5432", label="db")
+    ]
+    output = tmp_path / "dist"
+    writer.render(plan, output, image_ref="stand:test")
+
+    entrypoint = (output / "entrypoint.sh").read_text()
+    assert "wait_for command 'pg_isready -q -h 127.0.0.1 -p 5432' 30 \"db\"" in entrypoint
+    healthcheck = (output / "healthcheck.sh").read_text()
+    assert "sh -c 'pg_isready -q -h 127.0.0.1 -p 5432' >/dev/null 2>&1" in healthcheck

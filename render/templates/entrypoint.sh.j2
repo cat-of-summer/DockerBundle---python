@@ -16,6 +16,24 @@ SOCK=unix:///run/bundle/supervisor.sock
 mkdir -p "$MARKERS" /run/bundle /var/log/supervisor
 
 log() { printf '[bundle] %s\n' "$*"; }
+{% if seeds %}
+
+# A bind that is still empty gets the starting content baked into the image. An including
+# build mounts its own data/ here, and the copy shipped next to the module never reaches it.
+# Only an empty directory is filled: once the deployment has edited it, it is theirs.
+seed_dir() {
+    from=/usr/local/share/bundle/seed/$1; target=$2
+    [ -d "$from" ] || return 0
+    mkdir -p "$target"
+    if [ -z "$(ls -A "$target" 2>/dev/null | grep -v '^\.gitkeep$')" ]; then
+        log "seeding $target"
+        cp -a "$from/." "$target/"
+    fi
+}
+{% for bind in seeds %}
+seed_dir {{ bind.name }} {{ bind.target }}
+{% endfor %}
+{% endif %}
 
 # supervisord fails hard on an undefined %(ENV_*)s reference, so every replica count
 # gets a default before it starts.
@@ -83,6 +101,20 @@ run_init() {
         log "WARNING: init for $slug failed; leaving it unmarked so it retries next start"
     fi
 }
+{% if hooks %}
+
+# run_hooks: the project's own start-up steps from {{ hooks }}/entrypoint.d, in name order,
+# after every service is initialised and before the application starts. Each runs as its
+# own shell, so it cannot change this one; a failing hook stops the container. CRLF line
+# endings from an editor on Windows are tolerated.
+run_hooks() {
+    for hook in {{ hooks }}/entrypoint.d/*.sh; do
+        [ -f "$hook" ] || continue
+        log "hook $(basename "$hook")"
+        sed 's/\r$//' "$hook" | sh -e || { log "ERROR: hook $(basename "$hook") failed"; exit 1; }
+    done
+}
+{% endif %}
 {% if needs_init %}
 
 # ---- phase 1: data services -------------------------------------------------
@@ -108,7 +140,7 @@ for _ in $(seq 1 30); do
 done
 [ -n "$supervisord_ready" ] || log "WARNING: supervisord did not answer on $SOCK after 30s"
 {% for probe in readiness_before_init %}
-wait_for {{ probe.kind }} {{ probe.target }} {{ probe.timeout }} "{{ probe.label }}" || true
+wait_for {{ probe.kind }} {% if probe.kind == 'command' %}'{{ probe.target }}'{% else %}{{ probe.target }}{% endif %} {{ probe.timeout }} "{{ probe.label }}" || true
 {% endfor %}
 
 # ---- phase 2: service initialisation ----------------------------------------
@@ -142,6 +174,9 @@ run_init {{ service.spec.slug }} {{ service.init_script }}
 {% endfor %}
 
 # ---- phase 3: application processes -----------------------------------------
+{% if hooks %}
+run_hooks
+{% endif %}
 {% if plan.deferred %}
 log "starting application processes"
 # A scaled program is started as its group, 'name:*'; quoted so the shell does not glob it.
@@ -159,6 +194,10 @@ while kill -0 "$SUPERVISORD_PID" 2>/dev/null; do
 done
 exit "$rc"
 {% else %}
+{% if hooks %}
+
+run_hooks
+{% endif %}
 
 log "starting supervisord with {{ plan.programs | length }} program(s)"
 exec /usr/bin/supervisord -n -c /etc/supervisord.conf

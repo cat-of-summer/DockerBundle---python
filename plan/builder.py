@@ -20,6 +20,7 @@ from core.model import (
     MountMode,
     Origin,
     PlannedBind,
+    PlannedModule,
     PlannedService,
     PortSpec,
     ReadinessProbe,
@@ -755,6 +756,16 @@ def build(
             )
             continue
         plan.named_volumes[name] = target
+    plan.module = _module(manifest)
+    if plan.module is not None:
+        own = {plan.module.context_env, plan.module.data_env, plan.module.hooks_env,
+               "CONTAINER_LOGS_MAX_SIZE"}
+        for entry in plan.env:
+            if entry.key in own:
+                problems.append(
+                    f"module: {entry.key} is a key the module writes itself, but a service's "
+                    f".env declares it too; drop it with env: {{{entry.key}: drop}}"
+                )
     plan.binds = _binds(manifest, features, plan, problems, warnings)
 
     if problems:
@@ -837,6 +848,12 @@ def _binds(
                         f"binds.{name}: {copy.target} is baked by {service.spec.slug} but "
                         f"the bind at {bind.path} hides it in the container"
                     )
+        if bind.seed and source is not None and not source.is_dir():
+            problems.append(f"binds.{name}: seed needs ship to be a directory, got {bind.ship}")
+            continue
+        root = ""
+        if plan.module is not None and plan.module.data and _under(bind.host, plan.module.data):
+            root = plan.module.data
         item = PlannedBind(
             name=name,
             target=bind.path,
@@ -844,6 +861,9 @@ def _binds(
             source=source,
             is_file=bool(source and source.is_file()),
             read_only=bind.read_only,
+            seed=bind.seed,
+            root=root,
+            root_env=plan.module.data_env if root and plan.module else "",
         )
         if item.env in env_keys:
             problems.append(
@@ -853,3 +873,24 @@ def _binds(
             continue
         planned.append(item)
     return planned
+
+
+def _under(host: str, root: str) -> bool:
+    """Whether a deployment-relative path lies inside ``root`` (both ``./``-prefixed)."""
+    return PurePosixPath(host) != PurePosixPath(root) and PurePosixPath(root) in PurePosixPath(
+        host
+    ).parents
+
+
+def _module(manifest: Manifest) -> PlannedModule | None:
+    module = manifest.module
+    if module is None:
+        return None
+    return PlannedModule(
+        prefix=env_prefix(manifest.name),
+        context=module.context,
+        data=module.data,
+        hooks=module.hooks,
+        hooks_host=f"hooks/{manifest.name}",
+        logs=module.logs,
+    )

@@ -336,3 +336,64 @@ def test_a_read_only_bind_round_trips(tmp_path):
 
     assert reloaded.binds["config"].read_only is True
     assert yaml.safe_load((tmp_path / NAME).read_text())["binds"]["config"]["read_only"] is True
+
+
+# -- module -----------------------------------------------------------------
+
+
+def test_module_puts_binds_under_its_data_root_and_round_trips(tmp_path):
+    manifest = Manifest.from_dict(
+        {
+            "name": "agent",
+            "module": {"context": "services/agent", "data": "data", "hooks": "/etc/toolkit/"},
+            "binds": {
+                "config": {"path": "/agent/config", "ship": "cfg", "seed": True},
+                "secrets": {"path": "/agent/secrets", "host": "./keys"},
+            },
+        }
+    )
+    assert manifest.module.data == "./data"
+    assert manifest.module.hooks == "/etc/toolkit"
+    assert manifest.binds["config"].host == "./data/config"
+    assert manifest.binds["secrets"].host == "./keys"
+
+    reloaded = Manifest.load(manifest.save(tmp_path / NAME))
+    written = yaml.safe_load((tmp_path / NAME).read_text())
+    # The default under the data root is not written back.
+    assert "host" not in written["binds"]["config"]
+    assert written["binds"]["config"]["seed"] is True
+    assert written["module"] == {
+        "context": "services/agent", "data": "./data", "hooks": "/etc/toolkit",
+    }
+    assert reloaded.binds["config"].host == "./data/config"
+
+
+@pytest.mark.parametrize(
+    ("module", "message"),
+    [
+        ({"data": "../data"}, "inside the deployment"),
+        ({"data": "context"}, "generator writes"),
+        ({"hooks": "etc/toolkit"}, "absolute"),
+        ({"logs": "lots"}, "size"),
+        ({"build": "x"}, "unknown key"),
+    ],
+)
+def test_bad_modules_are_refused(module, message):
+    with pytest.raises(ManifestError, match=message):
+        Manifest.from_dict({"module": module})
+
+
+def test_a_seeded_bind_needs_ship_and_write_access():
+    with pytest.raises(ManifestError, match="set ship"):
+        Manifest.from_dict({"binds": {"config": {"path": "/c", "seed": True}}})
+    with pytest.raises(ManifestError, match="read_only forbids"):
+        Manifest.from_dict(
+            {"binds": {"config": {"path": "/c", "ship": "x", "seed": True, "read_only": True}}}
+        )
+
+
+def test_hooks_cannot_share_a_path_with_a_bind():
+    with pytest.raises(ManifestError, match="overlaps"):
+        Manifest.from_dict(
+            {"module": {"hooks": "/etc/toolkit"}, "binds": {"tk": "/etc/toolkit/x"}}
+        )

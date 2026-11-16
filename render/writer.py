@@ -358,6 +358,9 @@ def stage_context(plan: BundlePlan, context: Path, written: Written) -> None:
 
     bundle_dir = context / "_bundle"
     bundle_dir.mkdir(parents=True, exist_ok=True)
+    for bind in plan.binds:
+        if bind.seed and bind.source is not None:
+            _stage_tree(bind.source, bundle_dir / "seed" / bind.name)
     if plan.rootfs_stages:
         merge = resource_dir("render/assets") / "merge-rootfs.sh"
         _write(bundle_dir / "merge-rootfs.sh", merge.read_text(encoding="utf-8"), written,
@@ -393,6 +396,31 @@ def ship_binds(plan: BundlePlan, output: Path, written: Written) -> None:
             written.files.append(destination)
 
 
+def _module_dirs(plan: BundlePlan) -> list[str]:
+    """Top-level directories of a module that belong to the deployment, not the image."""
+    module = plan.module
+    if module is None:
+        return []
+    dirs = []
+    if module.data:
+        dirs.append(module.data.removeprefix("./").split("/")[0])
+    if module.hooks:
+        dirs.append(module.hooks_host.split("/")[0])
+    return sorted(set(dirs))
+
+
+def ship_hooks(plan: BundlePlan, output: Path, written: Written) -> None:
+    """Lay out ``hooks/<name>/`` with its two subdirectories, empty, as a starting point."""
+    if plan.module is None or not plan.module.hooks:
+        return
+    for sub in ("entrypoint.d", "supervisord.d"):
+        directory = output / plan.module.hooks_host / sub
+        directory.mkdir(parents=True, exist_ok=True)
+        keep = directory / ".gitkeep"
+        keep.touch(exist_ok=True)
+        written.files.append(keep)
+
+
 def render(
     plan: BundlePlan,
     output: Path,
@@ -422,6 +450,8 @@ def render(
         "image_ref": image_ref,
         "cuda": cuda,
         "start_period": DEFAULT_START_PERIOD,
+        "seeds": [bind for bind in plan.binds if bind.seed],
+        "hooks": plan.module.hooks if plan.module else "",
     }
     required_env = _required_env(plan)
 
@@ -501,8 +531,15 @@ def render(
         written,
     )
 
-    _write(output / ".dockerignore", "context/**/.git\n**/__pycache__\n**/node_modules\n", written)
+    ignored = "context/**/.git\n**/__pycache__\n**/node_modules\n"
+    if plan.module is not None:
+        # Built from this directory as a module: what the deployment keeps here is not
+        # part of the image.
+        ignored += ".env\n.git\n" + "".join(f"{path}/\n" for path in _module_dirs(plan))
+        _write(output / ".gitignore", ".env\n", written)
+    _write(output / ".dockerignore", ignored, written)
     ship_binds(plan, output, written)
+    ship_hooks(plan, output, written)
     _write(
         output / LOCK_NAME,
         _lock(plan, variant, image_ref, context_digest, required_env),
@@ -559,6 +596,7 @@ def _lock(
                 "host": bind.host,
                 "env": bind.env,
                 **({"read_only": True} if bind.read_only else {}),
+                **({"seed": True} if bind.seed else {}),
             }
             for bind in plan.binds
         },
@@ -569,6 +607,17 @@ def _lock(
         "required_env": list(required_env),
         "context_digest": context_digest,
     }
+    if plan.module is not None:
+        payload["module"] = {
+            key: value
+            for key, value in (
+                ("context", plan.module.context),
+                ("data", plan.module.data),
+                ("hooks", plan.module.hooks),
+                ("logs", plan.module.logs),
+            )
+            if value
+        }
     if not plan.binds:
         # Absent rather than empty: a bundle without binds keeps the lock it always had.
         del payload["binds"]

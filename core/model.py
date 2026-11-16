@@ -419,10 +419,69 @@ class PlannedBind:
     read_only: bool = False
     """Mount with ``:ro``."""
 
+    seed: bool = False
+    """``source`` is baked into the image and copied into an empty bind on start."""
+
+    root: str = ""
+    """The module data root this bind lives under, e.g. ``./data``; empty when it has its
+    own variable."""
+
+    root_env: str = ""
+    """The ``.env`` key that moves :attr:`root`, e.g. ``AGENT_DATA``."""
+
     @property
     def env(self) -> str:
-        """The ``.env`` key that moves the host path, e.g. ``CONFIG_DIR``."""
+        """The ``.env`` key that moves the host path, e.g. ``CONFIG_DIR``.
+
+        Under a module data root it is the root's key: one variable moves every bind there.
+        """
+        if self.root_env:
+            return self.root_env
         return f"{self.name.upper()}_{'FILE' if self.is_file else 'DIR'}"
+
+    @property
+    def source_expr(self) -> str:
+        """The compose ``source`` of the mount, e.g. ``./${AGENT_DATA:-data}/config``.
+
+        The ``./`` stays outside the variable, as docker_toolkit writes it: a value such as
+        ``data`` would otherwise reach compose as a bare name and be taken for a volume.
+        """
+        if self.root_env:
+            rest = self.host[len(self.root):].lstrip("/")
+            return f"./${{{self.root_env}:-{self.root.removeprefix('./')}}}/{rest}"
+        return f"${{{self.env}:-{self.host}}}"
+
+
+@dataclass
+class PlannedModule:
+    """``dist/`` laid out as a module of a larger compose build. See ``Manifest.module``."""
+
+    prefix: str
+    """Upper-case bundle name the module's own variables start with, e.g. ``AGENT``."""
+
+    context: str = ""
+    """Default build context inside the including build; empty emits no ``build:``."""
+
+    data: str = ""
+    hooks: str = ""
+    """Container path of the hooks directory; empty mounts none."""
+
+    hooks_host: str = ""
+    """Default host path of the hooks directory, e.g. ``hooks/agent``."""
+
+    logs: str = "100m"
+
+    @property
+    def context_env(self) -> str:
+        return f"{self.prefix}_MODULE"
+
+    @property
+    def data_env(self) -> str:
+        return f"{self.prefix}_DATA"
+
+    @property
+    def hooks_env(self) -> str:
+        return f"{self.prefix}_HOOKS"
 
 
 @dataclass
@@ -449,6 +508,9 @@ class BundlePlan:
 
     binds: list[PlannedBind] = field(default_factory=list)
     """Host paths mounted into the bundle container, in configuration order."""
+
+    module: PlannedModule | None = None
+    """Set when ``dist/`` is laid out as a module of a larger compose build."""
 
     network: str = "network"
     network_external: bool = True

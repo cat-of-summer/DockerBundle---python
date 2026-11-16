@@ -6,14 +6,43 @@
 # The bundle is one image holding every baked service. Anything that could not be baked
 # is kept here as an ordinary neighbouring service.
 
+{% if plan.module %}
+# A module of a larger compose build: listed under its include: with project_directory: .,
+# so data and hooks paths below resolve against that build. On its own, .env sets
+# {{ plan.module.context_env }}=. and the same paths resolve here.
+name: {{ plan.name }}${INSTANCE:-}
+
+{% endif %}
 services:
   {{ plan.name }}:
     image: ${BUNDLE_IMAGE:-{{ image_ref }}}
+{% if plan.module and plan.module.context %}
+    # Pulled first; built from the module only when the image cannot be pulled.
+    build:
+      context: ${{ "{" }}{{ plan.module.context_env }}:-{{ plan.module.context }}}
+      args:
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-}
+        http_proxy: ${HTTP_PROXY:-}
+        https_proxy: ${HTTPS_PROXY:-}
+        no_proxy: ${NO_PROXY:-}
+{% endif %}
     container_name: {{ plan.name }}${INSTANCE:-}
+{% if plan.module %}
+    hostname: {{ plan.name }}${INSTANCE:-}
+{% endif %}
     restart: unless-stopped
     # Programs drain on stop; the default 10s would kill them halfway.
     stop_grace_period: ${STOP_GRACE_PERIOD:-120s}
     env_file: .env
+{% if plan.module %}
+    logging:
+      driver: json-file
+      options:
+        max-size: ${CONTAINER_LOGS_MAX_SIZE:-{{ plan.module.logs }}}
+        max-file: "2"
+{% endif %}
 {% if shm_size %}
     # Asked for by one of the baked services. Docker's 64 MB default is where Chromium
     # runs out of shared memory part-way through a page.
@@ -25,7 +54,7 @@ services:
       - "{{ entry }}"
 {% endfor %}
 {% endif %}
-{% if plan.named_volumes or plan.binds %}
+{% if plan.named_volumes or plan.binds or (plan.module and plan.module.hooks) %}
     volumes:
 {% for name, target in plan.named_volumes.items() %}
       - {{ name }}:{{ target }}
@@ -34,7 +63,7 @@ services:
 {% if bind.is_file %}
       # A missing file stops the start instead of turning into an empty directory.
       - type: bind
-        source: ${{ '{' }}{{ bind.env }}:-{{ bind.host }}}
+        source: {{ bind.source_expr }}
         target: {{ bind.target }}
 {% if bind.read_only %}
         read_only: true
@@ -42,9 +71,14 @@ services:
         bind:
           create_host_path: false
 {% else %}
-      - ${{ '{' }}{{ bind.env }}:-{{ bind.host }}}:{{ bind.target }}{{ ':ro' if bind.read_only }}
+      - {{ bind.source_expr }}:{{ bind.target }}{{ ':ro' if bind.read_only }}
 {% endif %}
 {% endfor %}
+{% if plan.module and plan.module.hooks %}
+      # Project logic: entrypoint.d/*.sh run at the end of start-up, supervisord.d/*.conf
+      # add programs. Kept outside the module so an update does not overwrite it.
+      - ./${{ "{" }}{{ plan.module.hooks_env }}:-{{ plan.module.hooks_host }}}:{{ plan.module.hooks }}:ro
+{% endif %}
 {% endif %}
     networks:
       - network
@@ -82,6 +116,13 @@ services:
     container_name: {{ service.spec.name }}${INSTANCE:-}
     restart: unless-stopped
     env_file: .env
+{% if plan.module %}
+    logging:
+      driver: json-file
+      options:
+        max-size: ${CONTAINER_LOGS_MAX_SIZE:-{{ plan.module.logs }}}
+        max-file: "2"
+{% endif %}
 {% if service.spec.command %}
     command:
 {% for part in service.spec.command %}

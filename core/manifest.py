@@ -62,8 +62,92 @@ _BIND_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 #: generator, or overwrite what the generator wrote.
 RESERVED_DIST_NAMES = frozenset({
     "context", "Dockerfile", "docker-compose.yml", ".env", ".env.example", ".dockerignore",
-    "entrypoint.sh", "healthcheck.sh", "supervisord.conf", "docker-bundle.lock.yml",
+    ".gitignore", "entrypoint.sh", "healthcheck.sh", "supervisord.conf",
+    "docker-bundle.lock.yml", "hooks",
 })
+
+
+def _relative_host(value: str, where: str, example: str) -> list[str]:
+    """Split a deployment-relative path, refusing anything that leaves the directory."""
+    relative = PurePosixPath(value.replace("\\", "/"))
+    parts = [part for part in relative.parts if part != "."]
+    if relative.is_absolute() or not parts or ".." in parts:
+        raise ManifestError(
+            f"{where}: must be a path inside the deployment directory, like {example}; "
+            f"got {value!r}"
+        )
+    return parts
+
+
+@dataclass
+class Module:
+    """Shape ``dist/`` as a module of a larger compose build (docker_toolkit layout).
+
+    A module is a directory such a build pulls in as a git submodule and lists under
+    ``include:`` with ``project_directory: .``. Relative paths then resolve against the
+    including build, so what the deployment edits lives in that build's ``data/`` and
+    ``hooks/<name>/``, never inside the submodule. The same ``dist/`` still runs on its own:
+    its ``.env.example`` sets ``<NAME>_MODULE=.``.
+    """
+
+    context: str = ""
+    """Build context inside the including build, e.g. ``services/agent``. Compose pulls the
+    image first and builds from here only when the image cannot be pulled."""
+
+    data: str = ""
+    """Directory every bind without its own ``host`` lives under, e.g. ``./data``. One
+    ``<NAME>_DATA`` moves all of them instead of one variable per bind."""
+
+    hooks: str = ""
+    """Container path of the project hooks directory, e.g. ``/etc/toolkit``. Mounted
+    read-only from ``hooks/<name>``: ``entrypoint.d/*.sh`` run at the end of start-up,
+    ``supervisord.d/*.conf`` add programs."""
+
+    logs: str = "100m"
+    """Default size of one container log file; the deployment overrides it with
+    ``CONTAINER_LOGS_MAX_SIZE``. The current and one previous file are kept."""
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {}
+        for key in ("context", "data", "hooks"):
+            value = getattr(self, key)
+            if value:
+                data[key] = value
+        if self.logs != "100m":
+            data["logs"] = self.logs
+        return data
+
+    @classmethod
+    def from_dict(cls, raw: Any) -> Module:
+        where = "module"
+        if raw is True or raw is None:
+            raw = {}
+        if not isinstance(raw, dict):
+            raise ManifestError(f"{where}: expected a mapping")
+        unknown = set(raw) - {"context", "data", "hooks", "logs"}
+        if unknown:
+            raise ManifestError(
+                f"{where}: unknown key(s) {', '.join(sorted(unknown))}; "
+                f"expected context, data, hooks or logs"
+            )
+        context = str(raw.get("context") or "")
+        if context:
+            context = "/".join(_relative_host(context, f"{where}.context", "services/app"))
+        data = str(raw.get("data") or "")
+        if data:
+            parts = _relative_host(data, f"{where}.data", "./data")
+            if parts[0] in RESERVED_DIST_NAMES:
+                raise ManifestError(f"{where}.data: {data!r} is a name the generator writes itself")
+            data = "./" + "/".join(parts)
+        hooks = str(raw.get("hooks") or "")
+        if hooks and not hooks.startswith("/"):
+            raise ManifestError(
+                f"{where}.hooks: expected an absolute path inside the container, got {hooks!r}"
+            )
+        logs = str(raw.get("logs") or "100m")
+        if not re.match(r"^[0-9]+[kmg]?$", logs):
+            raise ManifestError(f"{where}.logs: expected a size such as 10m or 1g, got {logs!r}")
+        return cls(context=context, data=data, hooks=hooks.rstrip("/") or "", logs=logs)
 
 
 @dataclass
@@ -88,22 +172,29 @@ class Bind:
     read_only: bool = False
     """Mount it read-only: the container reads what the deployment edits, never the reverse."""
 
+    seed: bool = False
+    """Bake ``ship`` into the image as well and copy it into the bind on start while the
+    host directory is still empty. What an including build gets in place of ``dist/<host>``:
+    its own ``data/`` starts empty, and the module's shipped copy never reaches it."""
+
     when: list[str] = field(default_factory=list)
 
-    def to_dict(self, name: str) -> Any:
+    def to_dict(self, name: str, root: str = "") -> Any:
         data: dict[str, Any] = {"path": self.path}
-        if self.host and self.host != default_bind_host(name):
+        if self.host and self.host != default_bind_host(name, root):
             data["host"] = self.host
         if self.ship:
             data["ship"] = self.ship
         if self.read_only:
             data["read_only"] = True
+        if self.seed:
+            data["seed"] = True
         if self.when:
             data["when"] = list(self.when)
         return data
 
     @classmethod
-    def from_dict(cls, name: str, raw: Any) -> Bind:
+    def from_dict(cls, name: str, raw: Any, root: str = "") -> Bind:
         where = f"binds.{name}"
         if not _BIND_NAME.match(name):
             raise ManifestError(
@@ -114,38 +205,42 @@ class Bind:
             raw = {"path": raw}
         if not isinstance(raw, dict):
             raise ManifestError(f"{where}: expected a path or a mapping with path:")
-        unknown = set(raw) - {"path", "host", "ship", "read_only", "when"}
+        unknown = set(raw) - {"path", "host", "ship", "read_only", "seed", "when"}
         if unknown:
             raise ManifestError(
                 f"{where}: unknown key(s) {', '.join(sorted(unknown))}; "
-                f"expected path, host, ship, read_only or when"
+                f"expected path, host, ship, read_only, seed or when"
             )
         path = str(raw.get("path") or "")
         if not path.startswith("/"):
             raise ManifestError(
                 f"{where}: path must be absolute inside the container, got {path!r}"
             )
-        host = str(raw.get("host") or default_bind_host(name))
-        relative = PurePosixPath(host.replace("\\", "/"))
-        parts = [part for part in relative.parts if part != "."]
-        if relative.is_absolute() or not parts or ".." in parts:
-            raise ManifestError(
-                f"{where}: host must be a path inside the deployment directory, "
-                f"like ./{name}; got {host!r}"
-            )
+        host = str(raw.get("host") or default_bind_host(name, root))
+        parts = _relative_host(host, f"{where}.host", default_bind_host(name, root))
         if parts[0] in RESERVED_DIST_NAMES:
             raise ManifestError(f"{where}: host {host!r} is a name the generator writes itself")
+        read_only = bool(raw.get("read_only", False))
+        seed = bool(raw.get("seed", False))
+        ship = str(raw.get("ship") or "")
+        if seed and not ship:
+            raise ManifestError(f"{where}: seed copies ship into the bind; set ship:")
+        if seed and read_only:
+            raise ManifestError(
+                f"{where}: seed writes into the bind on start, which read_only forbids"
+            )
         return cls(
             path=path.rstrip("/") or "/",
             host="./" + "/".join(parts),
-            ship=str(raw.get("ship") or ""),
-            read_only=bool(raw.get("read_only", False)),
+            ship=ship,
+            read_only=read_only,
+            seed=seed,
             when=_when(raw.get("when"), where),
         )
 
 
-def default_bind_host(name: str) -> str:
-    return f"./{name}"
+def default_bind_host(name: str, root: str = "") -> str:
+    return f"{root.rstrip('/')}/{name}" if root else f"./{name}"
 
 
 @dataclass
@@ -479,7 +574,9 @@ def _refuse_retired_keys(raw: dict[str, Any], name: str) -> None:
                     )
 
 
-def _check_bind_paths(binds: dict[str, Bind], volumes: dict[str, Conditional]) -> None:
+def _check_bind_paths(
+    binds: dict[str, Bind], volumes: dict[str, Conditional], hooks: str = ""
+) -> None:
     """Refuse two mounts of one container path, or one nested inside another.
 
     Docker accepts both and the later mount silently wins, so a bind laid over a volume
@@ -487,6 +584,8 @@ def _check_bind_paths(binds: dict[str, Bind], volumes: dict[str, Conditional]) -
     """
     taken = [(f"volumes.{name}", item.value.rstrip("/") or "/") for name, item in volumes.items()]
     taken += [(f"binds.{name}", bind.path) for name, bind in binds.items()]
+    if hooks:
+        taken.append(("module.hooks", hooks))
     hosts: dict[str, str] = {}
     for index, (where, path) in enumerate(taken):
         for other_where, other in taken[index + 1:]:
@@ -552,6 +651,10 @@ class Manifest:
     belongs in :attr:`volumes`.
     """
 
+    module: Module | None = None
+    """Lay ``dist/`` out as a module of a larger compose build; ``None`` keeps a standalone
+    bundle."""
+
     labels: dict[str, Conditional] = field(default_factory=dict)
     """Labels forced onto the bundle container, overriding what the services declared.
 
@@ -609,9 +712,12 @@ class Manifest:
                 name: item.to_dict(value_key="path")
                 for name, item in sorted(self.volumes.items())
             }
+        if self.module is not None:
+            data["module"] = self.module.to_dict()
         if self.binds:
             data["binds"] = {
-                name: bind.to_dict(name) for name, bind in sorted(self.binds.items())
+                name: bind.to_dict(name, self.module.data if self.module else "")
+                for name, bind in sorted(self.binds.items())
             }
         if self.labels:
             data["labels"] = {
@@ -712,8 +818,12 @@ class Manifest:
         binds_raw = raw.get("binds") or {}
         if not isinstance(binds_raw, dict):
             raise ManifestError("binds must be a mapping of name -> path in the container")
-        binds = {str(name): Bind.from_dict(str(name), item) for name, item in binds_raw.items()}
-        _check_bind_paths(binds, volumes)
+        module = Module.from_dict(raw["module"]) if "module" in raw else None
+        root = module.data if module else ""
+        binds = {
+            str(name): Bind.from_dict(str(name), item, root) for name, item in binds_raw.items()
+        }
+        _check_bind_paths(binds, volumes, module.hooks if module else "")
 
         labels_raw = raw.get("labels") or {}
         if not isinstance(labels_raw, dict):
@@ -754,6 +864,7 @@ class Manifest:
             network_external=network_external,
             volumes=volumes,
             binds=binds,
+            module=module,
             labels=labels,
             globals=[str(g) for g in (raw.get("globals") or DEFAULT_GLOBALS)],
             env=env,

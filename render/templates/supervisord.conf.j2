@@ -64,3 +64,9 @@ stdout_logfile_maxbytes=0
 redirect_stderr=true
 
 {% endfor %}
+{% if hooks %}
+; The project's own programs, kept in {{ hooks }}/supervisord.d outside the module. A missing
+; or empty directory is only a warning in supervisord's log.
+[include]
+files = {{ hooks }}/supervisord.d/*.conf
+{% endif %}

@@ -73,9 +73,13 @@ supervisor:
     scalable: false
     critical: true
 
+# An open port is not a ready server: after an unclean stop postgres listens while it replays
+# the WAL and refuses connections ("the database system is not yet accepting connections").
+# An init script that connects then fails, the container restarts, the restart cuts recovery
+# short again - a loop with no way out. pg_isready answers only once connections are accepted.
 readiness:
-  - type: tcp
-    target: "{port}"
+  - type: command
+    target: "pg_isready -q -h 127.0.0.1 -p {port}"
     timeout: 90
 
 mount_kinds:
